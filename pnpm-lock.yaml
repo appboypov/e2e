@@ -325,6 +325,9 @@ importers:
       '@e2e-dev/browserstack':
         specifier: workspace:*
         version: link:../packages/browserstack
+      '@e2e-dev/core':
+        specifier: workspace:*
+        version: link:../packages/core
       '@e2e-dev/decision':
         specifier: workspace:*
         version: link:../packages/decision
