@@ -1,4 +1,4 @@
-import { launch, isE2EError } from '@e2e-dev/core';
+import { launch } from '@e2e-dev/core';
 import { createAgent } from '@e2e-dev/core/agent';
 import { web } from '@e2e-dev/web/engine';
 import { gateway } from 'ai';
@@ -26,8 +26,8 @@ if (order.total <= 39_000) {
   try {
     await session.screen.getByRole('button', /pay now/i).tap();
   } catch (error) {
-    // The click may have reached the server: check the order list, never retry the payment.
-    if (isE2EError(error) && error.code === 'ACTION_MAY_HAVE_COMMITTED') console.error('check /my/orders');
+    // A failed tap may still have reached the server: check the order list, never retry the payment.
+    console.error('check /my/orders');
     throw error;
   }
 } else {

@@ -180,7 +180,8 @@
               "reference/expect",
               "reference/screen",
               "reference/app",
-              "reference/agent"
+              "reference/agent",
+              "reference/core"
             ]
           },
           {

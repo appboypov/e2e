@@ -5,8 +5,8 @@ description: Drive a browser or a native app from plain code, with an optional a
 
 `@e2e-dev/core` drives a browser or an iOS or Android app from plain code. It
 uses the e2e engines, `screen`, and the agent, without the test runner: there
-is no config file, no report, and no `expect`. Use it for automation,
-scrapers, and bots.
+is no config file, no report, and no `expect`. Use it for scripts,
+automation, scrapers, and bots.
 
 ## Install
 
@@ -28,8 +28,13 @@ bun add @e2e-dev/core @e2e-dev/web
 
 Install `@e2e-dev/mobile` instead of, or beside, `@e2e-dev/web` to drive a
 device. `@e2e-dev/core` needs no `e2e`, the test runner, which is built on it.
-Import an engine from its `/engine` entry: the main entry adds the engine's
-fixture to `test` and loads `e2e`.
+In a project that has both, keep `e2e` and `@e2e-dev/core` on the same
+version.
+
+<Note>
+Import an engine from its `/engine` entry, as the examples do. The package's
+main entry is for tests: it loads `e2e`.
+</Note>
 
 ## Drive a browser
 
@@ -55,16 +60,29 @@ for (const sku of ['A-1001', 'B-2040']) {
 `screen` and `app` are the same API as in a test: see
 [screen](/reference/screen) and [app](/reference/app). `await using` closes
 each session at the end of its block, and the host, with its browser, at the
-end of the file.
+end of the file. It needs Node.js 24 or Bun. On Node.js 22, call `close()` in
+a `finally`:
+
+```ts
+const shop = await launch(web(), { app: { url: 'https://shop.example.com' } });
+try {
+  const session = await shop.newSession();
+  await session.app.open('/products/A-1001');
+} finally {
+  await shop.close(); // closes the open session too
+}
+```
 
 | Rule | Behavior |
 | --- | --- |
 | Ownership | Each `launch` takes its own engine instance: `launch(web())`. A second host on the same instance fails with `WORKER_PROTOCOL`. |
 | Sessions | One session at a time on a host. Close it before `newSession()`. For parallel work, launch more hosts. |
-| Timeouts | Each operation has a default timeout: 30000 ms for actions, 5000 ms for waits. Set it with `launch({ timeout })` or `session.setDefaultTimeout(ms)`. There is no session deadline. |
+| Timeouts | An action, a wait, or a read gets 30000 ms. `app.open()` and `app.restart()` get 120000 ms. `launch({ timeout })` or `session.setDefaultTimeout(ms)` sets one value for all of them. There is no session deadline. |
 | Cancellation | `launch({ signal })` and `newSession({ signal })` stop what is running. |
-| Ctrl-C | The host closes on SIGINT, SIGTERM, and SIGHUP, so its browser or device session does not stay behind. Turn it off with `handleSignals: false`. |
+| Ctrl-C | The host closes on SIGINT, SIGTERM, and SIGHUP, so its browser or device session does not stay behind. Then the program ends by the signal, unless it listens for the signal itself. Turn it off with `handleSignals: false`. |
 | Files | Screenshots and downloads go to a temp directory that is deleted when the host closes. Set `artifactsDir` to keep them. |
+
+The [reference](/reference/core) lists every option.
 
 ## Drive an app on a device
 
@@ -88,15 +106,20 @@ await session.app.open('/products/A-1001');
 `app.open()` launches the app and takes no path. `linkBase` also works in an
 `e2e.config.ts` target; see [config](/reference/config#linkbase).
 
+The iOS simulator can stop a custom-scheme link at an "Open in ...?" prompt.
+Tap its `Open` button when it shows:
+`session.screen.getByRole('button', 'Open')`.
+
 ## Keep a signed-in state
 
 `session.saveState()` captures a browser session's cookies and storage in
-memory. Start a later session from it with `newSession({ state })`. The mobile
-engine has no state to capture, so there it fails with
-`UNSUPPORTED_CAPABILITY`.
+memory. Close that session, then start another from the state with
+`newSession({ state })`. The mobile engine has no state to capture, so there
+it fails with `UNSUPPORTED_CAPABILITY`.
 
 ```ts
 const state = await session.saveState();
+await session.close();
 await using next = await shop.newSession({ state });
 ```
 
@@ -113,14 +136,13 @@ const restored = await SessionState.import(bytes, { key });
 ```
 
 A state restores only on a host of the same engine, platform, and app. Another
-is `SESSION_MISMATCH`. A wrong key or a changed byte is `SESSION_INVALID`.
-The encrypted state also holds the secret values the session knew, so a host
-launched without them still redacts them from what `screen` reads.
+is `SESSION_MISMATCH`. Two addresses of one app, such as `localhost` and
+`127.0.0.1`, are two apps unless both hosts set the same `app.identity`. A
+wrong key or a changed byte is `SESSION_INVALID`.
 
 ## Pass secrets
 
-Give secret values to `launch`, then fill them by name. The values never
-appear in errors or in what `screen` reads.
+Give secret values to `launch`, then fill them by name.
 
 ```ts
 await using shop = await launch(web(), {
@@ -130,17 +152,51 @@ await using shop = await launch(web(), {
 await session.screen.getByLabel('Password').fill(shop.secret('SHOP_PASSWORD'));
 ```
 
+The values never appear in the errors a session throws, in `screen.tree()`,
+or in what the agent reads. A read your code asks for, such as
+`textContent()`, returns the page's text as it is. An exported state holds
+the values the session knew, encrypted, so a host launched without them still
+redacts them.
+
 An agent gets a secret through its params, by name only:
 `agent.act('Sign in with {password}', { params: { password: shop.secret('SHOP_PASSWORD') } })`.
+
+## Handle errors
+
+Every failure is an error with a `code`. Check it with `isE2EError`, not
+`instanceof`.
+
+```ts
+import { isE2EError } from '@e2e-dev/core';
+
+try {
+  await session.screen.getByRole('button', 'Add to cart').tap();
+} catch (error) {
+  if (isE2EError(error) && error.code === 'LOCATOR_NOT_FOUND') console.log('not on sale');
+  else throw error;
+}
+```
+
+| Code | When |
+| --- | --- |
+| `LOCATOR_NOT_FOUND` | Nothing matched before the timeout. A wait that ran out has this code too. |
+| `LOCATOR_AMBIGUOUS` | The locator matched more than one node. |
+| `ACTION_FAILED` | The action did not finish. It may still have reached the app, so do not repeat a payment. |
+| `APP_UNREACHABLE` | Nothing answered at the app's URL. |
+| `CANCELLED` | A `signal` aborted the operation, or the session is closed. |
+| `WORKER_PROTOCOL` | A second session on a host, a second host on one engine instance, or a closed host. |
+
+[Errors](/reference/errors) lists every code.
 
 ## Let the agent act
 
 `createAgent` from `@e2e-dev/core/agent` puts an agent over one session. Its
 `act`, `assert`, `waitFor`, and `extract` work as they do in a
-[test](/reference/agent).
+[test](/reference/agent). The agent needs the AI SDK, and the example reads a
+typed result with `zod`: install `ai` and `zod` beside the engine.
 
 ```ts title="checkout.ts"
-import { launch, isE2EError } from '@e2e-dev/core';
+import { launch } from '@e2e-dev/core';
 import { createAgent } from '@e2e-dev/core/agent';
 import { web } from '@e2e-dev/web/engine';
 import { gateway } from 'ai';
@@ -168,8 +224,8 @@ if (order.total <= 39_000) {
   try {
     await session.screen.getByRole('button', /pay now/i).tap();
   } catch (error) {
-    // The click may have reached the server: check the order list, never retry the payment.
-    if (isE2EError(error) && error.code === 'ACTION_MAY_HAVE_COMMITTED') console.error('check /my/orders');
+    // A failed tap may still have reached the server: check the order list, never retry the payment.
+    console.error('check /my/orders');
     throw error;
   }
 } else {
@@ -180,27 +236,32 @@ if (order.total <= 39_000) {
 `createAgent` takes the options of an [`agents` entry](/reference/config#agents),
 such as `model`, `judge`, `maxSteps`, and `context`, plus `cache` and `guard`.
 There is no default model: an agent without one fails its first call with
-`MODEL_UNAVAILABLE`.
+`MODEL_UNAVAILABLE`. An `act` step has its own timeout, 120000 ms: set it per
+call with `timeout`.
 
 ### Replay recorded steps
 
 With `cache`, `act` records each flow and replays it on the next run with no
 model call. Every `act` then names its recording with `cacheKey`, or runs live
-with `cache: false`. The type system and the runtime both refuse an `act`
-without one.
+with `cache: false`. An `act` without one fails with `INVALID_ARGUMENT`, and
+TypeScript refuses it when the `cache` option is written in the `createAgent`
+call.
 
-A recording is keyed by the `cacheKey`, the instruction, its params, and how
-many times the session made the same call. A recording is saved when the
-session closes, or its host does, and only when a check passed after the
-step, such as `locator.waitFor()`, `agent.assert`, or `agent.waitFor`. When
-an agent step fails, recordings not yet confirmed are dropped. A failure your
-code catches, such as a `waitFor` timeout, drops nothing. Read
-[Replay cache](/cache) for how a replay checks the screen and hands off to the
-model.
+A recording is keyed by the `cacheKey`, the instruction, its params, the app,
+and how many times the session made the same call. Pass a value that changes
+between runs as a param: a value the agent reads off the screen is decided by
+the model again on each run.
+
+A recording is saved when the session closes, or its host does, and only when
+a check passed after the step, such as `locator.waitFor()`, `agent.assert`,
+or `agent.waitFor`. When an agent step fails, the recordings not yet confirmed
+at that moment are dropped. A failure of your own code's locator call, such
+as a `waitFor` that ran out, drops nothing. Read [Replay cache](/cache) for
+how a replay checks the screen and hands off to the model.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `dir` | `.e2e/cache` | The directory, from the current directory. |
+| `dir` | `.e2e/cache` | The directory, from the `launch` `cwd`. |
 | `mode` | `read-write` | `read-only` replays and never writes. |
 | `strict` | `false` | A recording that no longer replays fails with `REPLAY_STALE`. |
 | `store` | - | A custom [`CacheStore`](/cache) in place of the files. |
@@ -208,7 +269,9 @@ model.
 ### Keep actions for your code
 
 `guard` names the actions the agent may not take on its own. In `act`, the
-guard checks every action, replayed ones too, before the action runs.
+guard checks every action, replayed ones too, before the action runs. It
+reads the screen again before each action, so it judges the screen that the
+action before it left.
 
 | Field | Effect |
 | --- | --- |
@@ -220,23 +283,37 @@ guard checks every action, replayed ones too, before the action runs.
 A rule matches the node the action lands on and the screen's location. Set
 any of `role`, `name`, `text`, `testId`, `url`, `destination` (where a
 `navigate` goes), `key`, and `actions`; every field you set must match.
-`name` matches exactly unless it is a RegExp.
+`name` matches exactly unless it is a RegExp. A `key` or an `actions` name
+that does not exist fails `createAgent` with `INVALID_ARGUMENT`.
 
 An unidentified action is a point action (`tapAt`, `hoverAt`, `dragAt`) that
 lands on no control the screen lists, such as a canvas, or a mutating
 [project tool](/tools), which `actions` names as `tool:<name>`. The guard
 does not check `agent.assert`, which only reads and scrolls. A drag is
-checked on the node it starts from, not where it drops. A recording made
-under one set of rules never replays under another.
+checked on the node it starts from, not where it drops.
+
+A recording made under one set of rules never replays under another. A stop
+that `check` decided is asked again when its recording replays: when `check`
+no longer stops it, the agent continues from there.
 
 <Note>
 A rule on a button does not see Enter pressed in a field, which can submit
-the form. Add a rule such as `{ key: 'Enter', url: /checkout/ }`.
+the form. Add a rule such as `{ key: 'Enter', url: /checkout/ }`. It also
+matches Enter with a modifier, and typed text that holds a line break.
 </Note>
+
+<Warning>
+The guard reads the screen right before each action. A page that renames a
+control by itself in that instant is outside what it can see. For a payment,
+also check the result in your own code.
+</Warning>
 
 ## Next
 
 <CardGroup cols={2}>
+  <Card title="@e2e-dev/core reference" href="/reference/core">
+    Every option of `launch`, a session, a saved state, and `createAgent`.
+  </Card>
   <Card title="screen" href="/reference/screen">
     Every query and action a session holds.
   </Card>
@@ -245,8 +322,5 @@ the form. Add a rule such as `{ key: 'Enter', url: /checkout/ }`.
   </Card>
   <Card title="Models" href="/models">
     Choose and configure the model the agent calls.
-  </Card>
-  <Card title="Engines" href="/engines">
-    How an engine works, and how to write one.
   </Card>
 </CardGroup>
