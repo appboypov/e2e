@@ -39,7 +39,7 @@ export async function writeHostTrace(options: HostTraceOptions): Promise<Report>
     config, runId: options.runId, startedAt: attempt.startedAt,
     status: status === 'interrupted' ? 'interrupted' : status === 'passed' ? 'passed' : 'failed',
     exitCode: status === 'interrupted' ? 130 : status === 'passed' ? 0 : 1,
-    results: [result], serialGroups: [], runErrors: [], targetProvenance: new Map(),
+    results: [result], serialGroups: [], runErrors: [], runWarnings: [], targetProvenance: new Map(),
   });
   const reported = report.run.results[0]!;
   const page = renderTracePage(report, reported, outcome(reported, new Map()), {

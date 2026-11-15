@@ -755,6 +755,11 @@
         "serialGroups": { "type": "array", "items": { "$ref": "#/$defs/serialGroup" } },
         "results": { "type": "array", "items": { "$ref": "#/$defs/result" } },
         "errors": { "type": "array", "items": { "$ref": "#/$defs/error" } },
+        "warnings": {
+          "description": "Cleanup-phase faults of the run, such as an engine dispose that timed out. They leave status and exitCode as the tests set them.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/error" }
+        },
         "summary": { "$ref": "#/$defs/summary" },
         "limits": { "$ref": "#/$defs/limits" },
         "usage": { "$ref": "#/$defs/usage" },

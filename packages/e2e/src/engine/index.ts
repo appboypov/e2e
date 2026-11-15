@@ -888,7 +888,7 @@ export interface Engine {
    * `dispose`. Runs only when `prepare` was called, within the cleanup
    * budget and never cancelled by an interrupt: an interrupted run is exactly
    * when a leased device must still be released. A failure is a
-   * cleanup-phase run error, never a crash.
+   * cleanup-phase warning in `run.warnings`, never a crash.
    */
   finish?(info: EngineFinishInfo): Promise<void>;
   /**
@@ -923,7 +923,7 @@ export interface Engine {
    */
   endAttempt?(context: EngineCleanupContext): Promise<void>;
   /**
-   * Worker shutdown, within the cleanup budget; failure is a run error. Runs
+   * Worker shutdown, within the cleanup budget; failure is a warning. Runs
    * once `init` was called, even when it failed, so it MUST tolerate a
    * partly initialized engine. A live
    * `reuseSignal` permits preserving run-owned resources for a replacement,

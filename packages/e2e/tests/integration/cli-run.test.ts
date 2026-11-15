@@ -208,7 +208,7 @@ test('fails once', async ({ app }) => {
     expect(listed.output).toContain('passes');
   });
 
-  it('exits 3 when a passed test failed its cleanup and the config leaves a timer open', () => {
+  it('exits 0 when a passed test failed its cleanup and the config leaves a timer open', () => {
     const { exitCode } = cli(
       {
         'e2e.config.ts': fakeConfig("{ onEndAttempt() { throw new Error('cleanup failed'); } }") + openTimer,
@@ -216,7 +216,7 @@ test('fails once', async ({ app }) => {
       },
       ['run'],
     );
-    expect(exitCode).toBe(3);
+    expect(exitCode).toBe(0);
   });
 
   it('exits 0 with the whole json report on stdout when a test file leaves a timer open', () => {

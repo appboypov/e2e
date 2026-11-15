@@ -1940,6 +1940,18 @@ describe('ListReporter goldens', () => {
     expectGolden('list-error.txt', stable(lines.join('\n')));
   });
 
+  it('prints a cleanup warning in its own block, apart from the run errors', () => {
+    const { lines, output } = capture();
+    const reporter = plainReporter(output);
+    reporter.handle({ type: 'run-warning', error: { category: 'infrastructure', code: 'CLEANUP_TIMEOUT', message: 'disposing the engine timed out', retryable: false, phase: 'cleanup' } });
+    reporter.handle(runFinished({ status: 'passed', exitCode: 0 }));
+    const text = stable(lines.join('\n'));
+    expect(text).toContain('Warnings 1');
+    expect(text).toContain(' WARN  infrastructure warning CLEANUP_TIMEOUT (cleanup)');
+    expect(text).toContain('disposing the engine timed out');
+    expect(text).not.toContain('Run Errors');
+  });
+
   it('prints an interrupted run: the setup step it cut, each interrupt, the failure limit, and the interrupt wording on empty counters', () => {
     const { lines, output } = capture();
     const reporter = plainReporter(output);

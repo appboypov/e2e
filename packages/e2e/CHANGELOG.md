@@ -1,5 +1,11 @@
 # e2e
 
+## 0.23.1-das.1
+
+### Patch Changes
+
+- A cleanup fault is a warning. An engine `dispose` or `finish` that fails or outlives `cleanupTimeout`, and an attempt whose cleanup failed, leave the exit code and `run.status` as the tests set them. The report keeps run-level cleanup faults in the new `run.warnings`, the stream carries them as `run-warning` events, and the list reporter prints them in a yellow `Warnings` block. An interrupt still exits 130.
+
 ## 0.23.1
 
 ### Patch Changes

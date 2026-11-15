@@ -58,7 +58,7 @@ describe('list reporter output', () => {
     }
   });
 
-  it('shows a cleanup failure under a passed test and in the summary, not a green summary with exit 3', async () => {
+  it('shows a cleanup failure under a passed test and in the summary, with exit 0', async () => {
     const written: string[] = [];
     const stdoutWrite = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
       written.push(String(chunk));
@@ -84,7 +84,7 @@ describe('list reporter output', () => {
       project = run.project;
       stdoutWrite.mockRestore();
       const output = stripVTControlCharacters(written.join(''));
-      expect(run.outcome.exitCode).toBe(3);
+      expect(run.outcome.exitCode).toBe(0);
       expect(output).toMatch(/✓ .+ tests\/close-fail\.e2e\.ts > taps a node/);
       expect(output).toMatch(/cleanup failed: ENGINE_FAILURE: attempt end failed: close exploded/);
       expect(output).toMatch(/Cleanup +1 cleanup failure: ENGINE_FAILURE: attempt end failed: close exploded/);

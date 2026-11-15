@@ -532,7 +532,7 @@ test.describe('wizard', { serial: true, retries: 1 }, () => {
   );
 
   it(
-    'a failing endAttempt marks cleanup failed with a secondary error and exits 3 even though the test passed',
+    'a failing endAttempt marks cleanup failed with a secondary error and exits 0, since the test passed',
     async () => {
       const fake = createFakeEngine({
         onEndAttempt() {
@@ -548,7 +548,7 @@ test.describe('wizard', { serial: true, retries: 1 }, () => {
       const attempt = result.attempts[0]!;
       expect(attempt.cleanup).toBe('failed');
       expect(attempt.secondaryErrors.some((error) => error.phase === 'cleanup')).toBe(true);
-      expect(outcome.exitCode).toBe(3);
+      expect(outcome.exitCode).toBe(0);
       project.cleanup();
     },
     60_000,
@@ -578,7 +578,7 @@ test.describe('wizard', { serial: true, retries: 1 }, () => {
   );
 
   it(
-    'a failing dispose is a cleanup run error and fails the run',
+    'a failing dispose is a cleanup warning and leaves the run passed',
     async () => {
       const fake = createFakeEngine({
         onDispose() {
@@ -590,14 +590,16 @@ test.describe('wizard', { serial: true, retries: 1 }, () => {
         { appUrl: APP_URL, config: engineConfig(fake.engine) },
       );
       expect(resultByTitle(outcome, 'taps a node').status).toBe('passed');
-      // Disposal happens after the last unit reported, so its error rides the
-      // worker's final message; it must still reach the report and exit code.
-      const disposal = outcome.report.run.errors.find((entry) =>
+      // Disposal happens after the last unit reported, so its warning rides the
+      // worker's final message; it must still reach the report.
+      const disposal = outcome.report.run.warnings.find((entry) =>
         entry.message.includes('device lease release exploded'),
       );
       expect(disposal?.phase).toBe('cleanup');
       expect(disposal?.category).toBe('infrastructure');
-      expect(outcome.exitCode).toBe(3);
+      expect(outcome.report.run.errors).toEqual([]);
+      expect(outcome.exitCode).toBe(0);
+      expect(outcome.status).toBe('passed');
       assertValidReport(outcome.report);
       project.cleanup();
     },
@@ -1138,7 +1140,7 @@ test('fails on purpose', async ({ app }) => {
   );
 
   it(
-    'a required video that fails to stop fails cleanup and exits 3 even though the test passed (#1231)',
+    'a required video that fails to stop fails cleanup and exits 0, since the test passed (#1231)',
     async () => {
       const fake = createFakeEngine({
         video: true,
@@ -1158,7 +1160,7 @@ test('fails on purpose', async ({ app }) => {
       expect(attempt.secondaryErrors.find((error) => error.phase === 'cleanup')?.message).toContain(
         'video finalization exploded',
       );
-      expect(outcome.exitCode).toBe(3);
+      expect(outcome.exitCode).toBe(0);
       assertValidReport(outcome.report);
       project.cleanup();
     },

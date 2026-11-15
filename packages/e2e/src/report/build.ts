@@ -84,6 +84,8 @@ export interface BuildReportOptions {
   results: readonly ResultRecord[];
   serialGroups: readonly SerialGroupRecord[];
   runErrors: readonly RunError[];
+  /** Cleanup-phase run errors: reported as warnings, outside the status. */
+  runWarnings: readonly RunError[];
   targetProvenance: ReadonlyMap<string, TargetProvenance>;
   /** The exploration record of an `e2e explore` run; absent for a test run. */
   explore?: ReportExplore | undefined;
@@ -467,6 +469,8 @@ export interface Report1Document {
     serialGroups: readonly ReportSerialGroup[];
     results: readonly ReportResult[];
     errors: readonly ReportError[];
+    /** Cleanup-phase faults of the run: they leave `status` and `exitCode` as the tests set them. */
+    warnings: readonly ReportError[];
     summary: ReportSummary;
     limits: ReportLimits;
     usage: ReportUsage;
@@ -881,6 +885,7 @@ export function buildReport(options: BuildReportOptions): Report1Document {
       serialGroups,
       results,
       errors: options.runErrors.map((runError) => serializeErrorRecord(runError.error)),
+      warnings: options.runWarnings.map((runWarning) => serializeErrorRecord(runWarning.error)),
       summary,
       limits: config?.limits ?? DEFAULT_LIMITS,
       usage: computeUsage({

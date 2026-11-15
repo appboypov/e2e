@@ -50,7 +50,7 @@ import { writeJsonReport } from '../report/write.ts';
 import { createRunEventEmitter, toEventResult, type RunEventSink, type RunExitCode, type RunStatus, type RunEventFact, type SetupOutcome, type SetupStep } from './events.ts';
 import { allocateAppPorts } from './app-ports.ts';
 import { inProcessSpawner } from './in-process.ts';
-import { cleanupErrorsOf, someSkippedAfterFailure, tracedResultIds, type ResultRecord, type RunError, type SerialGroupRecord } from './records.ts';
+import { someSkippedAfterFailure, tracedResultIds, type ResultRecord, type RunError, type SerialGroupRecord } from './records.ts';
 import { runUnits, type TargetFailure } from './scheduler.ts';
 import type { BeforeStep, HeldStep, StepPrompt } from './step-hold.ts';
 import { stepPromptLine } from '../report/list-steps.ts';
@@ -454,6 +454,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   const interruptController = new AbortController();
   const forceController = new AbortController();
   const runErrors: RunError[] = [];
+  const runWarnings: RunError[] = [];
   const results: ResultRecord[] = [];
   const serialGroups: SerialGroupRecord[] = [];
   const targetProvenance = new Map<string, TargetProvenance>();
@@ -541,8 +542,16 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     ...(options.onEvent === undefined ? [] : [{ name: 'onEvent', onEvent: options.onEvent }]),
   ]);
 
-  /** Records one run-level error once: into the report and onto the stream. */
+  /**
+   * Records one run-level error once: into the report and onto the stream.
+   * A cleanup-phase error is a warning: it leaves the verdict and the exit code as the tests set them.
+   */
   const recordRunError = (runError: RunError): void => {
+    if (runError.error.phase === 'cleanup') {
+      runWarnings.push(runError);
+      emit({ type: 'run-warning', error: runError.error });
+      return;
+    }
     runErrors.push(runError);
     emit({ type: 'run-error', error: runError.error });
   };
@@ -632,6 +641,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       results,
       serialGroups,
       runErrors,
+      runWarnings,
       targetProvenance,
       changes: changesReport,
       filters: filterReport,
@@ -782,6 +792,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     // its tests writes no file to read them in, so without it they go to stderr.
     if (listReporter === undefined && options.quiet !== true) {
       for (const error of report.run.errors) process.stderr.write(failureLine(error));
+      for (const warning of report.run.warnings) process.stderr.write(`warning ${failureLine(warning)}`);
     }
     if (debug.enabled) {
       process.stderr.write(debug.summary());
@@ -1495,7 +1506,7 @@ function statusOf(exitCode: RunExitCode): Exclude<RunStatus, 'blocked'> {
  * for its members, whose results carry no attempts, and for a group attempt
  * that failed before any member ran (a launch), whose members are skipped.
  *
- * An attempt whose cleanup failed adds its cleanup errors' codes, even when the test passed.
+ * An attempt whose cleanup failed adds no code: its cleanup errors are warnings.
  */
 function verdictExitCodes(results: readonly ResultRecord[], serialGroups: readonly SerialGroupRecord[], appExitTargets: ReadonlySet<string>): number[] {
   const codes: number[] = [0];
@@ -1513,9 +1524,6 @@ function verdictExitCodes(results: readonly ResultRecord[], serialGroups: readon
         break;
       default:
         break;
-    }
-    for (const cleanupError of cleanupErrorsOf(verdict.attempts)) {
-      codes.push(exitCodeForCategory(cleanupError.category));
     }
   }
   return codes;
