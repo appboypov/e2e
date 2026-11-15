@@ -81,6 +81,7 @@ import {
   createAgent as createCoreAgent, type CacheStore as CoreCacheStore, type CreateAgentOptions, type StepExecutor as CoreStepExecutor, type UncheckedAgent,
 } from '@e2e-dev/core/agent';
 import { launch, SessionState, type Host, type Session } from '@e2e-dev/core';
+import { engineBrand, expectationBrand, locatorBrand, secretBrand } from '@e2e-dev/core/lib/internal/brands';
 import { defineEngine } from '../../src/engine/index.ts';
 // @ts-expect-error isDefinedTool left e2e/agent: config loading checks each tools entry itself
 import { isDefinedTool } from '../../src/agent/public.ts';
@@ -1085,6 +1086,12 @@ void (await gadgetSession.saveState()).data;
 await SessionState.import(new Uint8Array(), { key: new Uint8Array(32) });
 // @ts-expect-error a state key is bytes, never a passphrase
 await SessionState.import(new Uint8Array(), { key: 'passphrase' });
+// A brand's key is typed by its name, never `unique symbol`: a project that updates `e2e` or an engine alone holds two
+// copies of @e2e-dev/core, and their branded types (an engine handle, a locator under `expect`) must still agree.
+void (engineBrand satisfies 'e2e.engine.v1');
+void (expectationBrand satisfies 'e2e.expectation.v1');
+void (locatorBrand satisfies 'e2e.locator');
+void (secretBrand satisfies 'e2e.secret');
 // @e2e-dev/core/agent: an agent with a cache names every act's recording.
 const cachingAgent = createCoreAgent(gadgetSession, { cache: { dir: '.e2e/cache' }, guard: { stop: [{ role: 'button', name: /Pay/ }] } });
 const stoppedResult = await cachingAgent.act('checkout', { cacheKey: 'checkout' });
