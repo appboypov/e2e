@@ -291,6 +291,7 @@ class ActDispatch {
             redactCut: runtime.redactCut,
             maxActions: this.accounting.maxActions,
             stepIndex,
+            ...(runtime.guard === undefined ? {} : { stillStops: runtime.guard.stillStops }),
           });
   }
 
@@ -402,7 +403,7 @@ class ActDispatch {
       outcome,
       this.explanation,
       model === undefined ? undefined : { provider: model.provider, model: model.id },
-      this.guardStop?.action,
+      this.guardStop,
     );
   }
 

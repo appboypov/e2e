@@ -7,27 +7,35 @@
 
 export { launch, type CoreFixtures, type Host, type LaunchApp, type LaunchOptions, type NewSessionOptions, type Session, type SessionControls } from './launch.ts';
 export { SessionState, type SessionStateKeyOptions } from './state.ts';
-export { ConfigurationError, isE2EError } from '../internal/errors.ts';
+export { ConfigurationError, isE2EError, type ErrorCategory, type ErrorDetails } from '../internal/errors.ts';
 export type { EngineHandle } from '../engine/index.ts';
 export type {
   ActionOptions,
   App,
+  AppPermissionState,
   ClickOptions,
   Expectable,
   JsonPrimitive,
   JsonValue,
+  KeyModifier,
   Locator,
+  LongPressOptions,
   Point,
+  PressSequentiallyOptions,
   RecordedVideo,
+  RecordedVideoFile,
+  RecordedVideoLink,
   RecordingOptions,
   Role,
+  RoleAlias,
   RoleOptions,
+  ScrollDirection,
   Screen,
   Secret,
   SelectOption,
   SwipeOptions,
+  SwipePathOptions,
   TapOptions,
-  TargetApp,
   TextMatch,
   TextMatchOptions,
 } from '../types.ts';

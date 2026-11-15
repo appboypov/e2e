@@ -11,7 +11,7 @@ import type { ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
 import type { TargetSession } from '../engine/surface.ts';
 import { PollScope } from '../expect/poll-scope.ts';
 import type { DebugTrace } from '../internal/debug.ts';
-import { classifyError, ConfigurationError, InfrastructureError, serializeError, TestTimeoutError, type SerializedError } from '../internal/errors.ts';
+import { classifyError, ConfigurationError, InfrastructureError, serializeError, TestTimeoutError, type E2EError, type SerializedError } from '../internal/errors.ts';
 import { timestamp, uuidv7 } from '../internal/ids.ts';
 import { Deadline, MAX_TIMER_MS, withTimeout } from '../internal/time.ts';
 import { attemptVideo } from '../internal/recording-modes.ts';
@@ -31,6 +31,12 @@ export interface StandaloneSessionOptions {
   readonly timeoutMs: number;
   readonly agent?: string | undefined;
   readonly onProgress?: (progress: StepProgress) => void;
+  /** What an operation fails with once the session has closed; a bare cancellation when absent. */
+  readonly closed?: () => E2EError;
+  /** Classifies and redacts the errors the session's operations throw; see `StepRecorderOptions.redactThrown`. */
+  readonly redactThrown?: boolean;
+  /** How many finished steps the session keeps; see `StepRecorderOptions.retainSteps`. */
+  readonly retainSteps?: number;
   /** The test title of a hosted attempt; its policy decides whether the attempt reads it. */
   readonly name?: string;
   /** A state an earlier session captured, restored at launch. */
@@ -184,6 +190,8 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
   const steps = new StepRecorder(attemptId, {
     maxEventsPerStep: config.limits.maxEventsPerStep, projectRoot: config.projectRoot, redact, signal: attemptSignal,
     ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+    ...(options.redactThrown === true ? { redactThrown: true } : {}),
+    ...(options.retainSteps === undefined ? {} : { retainSteps: options.retainSteps }),
   });
   const artifacts = createAttemptArtifacts({
     artifactsRoot: worker.resultsDir, segments: identity.segments, attemptId, currentStepId: () => steps.currentStepId,
@@ -260,7 +268,7 @@ export async function launchAttempt<Sessions extends EngineSessions, Extra>(
       if (deadline.expired()) expire();
       const abandonedPoll = polls.close();
       const abandonedStep = steps.abandonRunning();
-      end.abort();
+      end.abort(options.closed?.());
       for (const error of [abandonedStep, abandonedPoll, reservation.publication?.close()]) if (error !== undefined) recordFailure(error, 'body');
       try {
         await withTimeout(steps.settleAbandoned(), config.cleanupTimeout, () => new InfrastructureError('CLEANUP_TIMEOUT', 'abandoned session steps did not settle'));

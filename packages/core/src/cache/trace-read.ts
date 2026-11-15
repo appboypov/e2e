@@ -145,6 +145,7 @@ function readActionTrace(document: unknown): ActionTrace | undefined {
   const keyedBy = readKeyContext(raw['keyedBy']);
   const stop = raw['stop'] === undefined ? undefined : readProposedAction(raw['stop']);
   if (raw['stop'] !== undefined && stop === undefined) return undefined;
+  if (raw['stopBy'] !== undefined && (raw['stopBy'] !== 'check' || stop === undefined)) return undefined;
 
   return {
     actions,
@@ -162,7 +163,7 @@ function readActionTrace(document: unknown): ActionTrace | undefined {
     ...(endWaitMs === undefined ? {} : { endWaitMs }),
     ...(truncated === undefined ? {} : { truncated }),
     ...(keyedBy === undefined ? {} : { keyedBy }),
-    ...(stop === undefined ? {} : { stop }),
+    ...(stop === undefined ? {} : { stop, ...(raw['stopBy'] === 'check' ? { stopBy: 'check' as const } : {}) }),
   };
 }
 

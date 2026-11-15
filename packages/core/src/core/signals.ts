@@ -4,6 +4,11 @@
  * device sessions it launched do not outlive the program. The signal is then
  * raised again for the process's own disposition, unless the program listens
  * for it itself, in which case its listener decides.
+ *
+ * An engine may listen too: a browser driver closes its browsers on SIGHUP,
+ * and its listener outlives the close by a moment. A listener registered
+ * while a host or a session opened is the engine's (`engineListeners`), never
+ * the program's, so it neither holds the process nor swallows the signal.
  */
 
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
@@ -12,6 +17,22 @@ type Closer = () => Promise<unknown>;
 
 const closers = new Set<Closer>();
 let installed = false;
+/** Signal listeners that appeared while an engine was opening; see the header. */
+const engineOwned = new Set<unknown>();
+
+/**
+ * Marks the signal listeners registered between this call and the returned
+ * function's as an engine's. Call it around what launches the engine's
+ * processes: opening a host, opening a session.
+ */
+export function engineListeners(): () => void {
+  const before = new Set<unknown>(SIGNALS.flatMap((signal) => process.listeners(signal)));
+  return () => {
+    for (const signal of SIGNALS) {
+      for (const listener of process.listeners(signal)) if (!before.has(listener) && listener !== onSignal) engineOwned.add(listener);
+    }
+  };
+}
 
 /** Closes every registered host once, then hands the signal back to the process. */
 function onSignal(signal: NodeJS.Signals): void {
@@ -22,7 +43,11 @@ function onSignal(signal: NodeJS.Signals): void {
   }));
   closers.clear();
   void Promise.allSettled(pending).then(() => {
-    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+    const listeners = process.listeners(signal);
+    if (listeners.some((listener) => !engineOwned.has(listener))) return;
+    // The hosts are closed, so an engine's listener has nothing left to close, and left in place it would take the signal.
+    for (const listener of listeners) process.off(signal, listener);
+    process.kill(process.pid, signal);
   });
 }
 

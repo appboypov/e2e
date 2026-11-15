@@ -447,7 +447,7 @@ function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckIn
   if (app.url === undefined) {
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      `target "${targetName}" needs app.url: a web() target opens the app at a URL, targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }]`,
+      `target "${targetName}" needs app.url: web() opens the app at a URL, such as app: { url: 'http://localhost:3000' }`,
     );
   }
   if (app.permissions !== undefined) validatePermissions(targetName, browser, app.permissions);

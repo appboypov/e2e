@@ -82,6 +82,14 @@ const FUNCTION_MEMBERS = [
 /** Universal fixture names a contribution may never shadow. */
 const RESERVED_FIXTURES = new Set(['agent', 'app', 'screen', 'platform', 'session']);
 
+/**
+ * The methods an `@e2e-dev/core` session holds beside its fixtures. A session
+ * is one flat object, so a fixture may not take one of these names, now or
+ * when a control is added.
+ */
+export const SESSION_CONTROLS = ['saveState', 'setDefaultTimeout', 'close'] as const;
+const SESSION_CONTROL_SET: ReadonlySet<string> = new Set(SESSION_CONTROLS);
+
 const FIXTURE_NAME_PATTERN = /^[a-z][A-Za-z0-9]*$/;
 
 function invalid(name: string, detail: string): ConfigurationError {
@@ -296,6 +304,9 @@ export function defineEngine<Fixtures extends object = {}>(declared: EngineSpec<
       }
       if (RESERVED_FIXTURES.has(fixture)) {
         throw invalid(name, `fixture name "${fixture}" shadows a universal fixture`);
+      }
+      if (SESSION_CONTROL_SET.has(fixture)) {
+        throw invalid(name, `fixture name "${fixture}" is a method of every @e2e-dev/core session (${SESSION_CONTROLS.join(', ')}); name the fixture something else`);
       }
       if (typeof factory !== 'function') {
         throw invalid(name, `fixtures.${fixture} must be a factory function`);

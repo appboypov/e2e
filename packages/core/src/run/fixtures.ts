@@ -481,6 +481,8 @@ function unreachableApp(cause: unknown, url: string, command: CommandConfig | un
 function createApp(environment: AttemptEnvironment, engine: LocatorEngine): App {
   const { config, steps, target } = environment;
   const recordings = sessionRecordings(environment.session, target.name);
+  /** What bounds an open, a restart, or a link open: the default a program set, else the test's timeout. */
+  const lifecycleMs = (): number => engine.lifecycleTimeout ?? config.timeout;
 
   /** Opens one resolved URL; a refused connection is reported as the app being down. */
   const openAt = async (resolved: string, timeoutMs: number): Promise<void> => {
@@ -496,20 +498,20 @@ function createApp(environment: AttemptEnvironment, engine: LocatorEngine): App 
     steps.run('app', api, label, async () => {
       requireAppUrl(target);
       const resolved = url === undefined ? target.app.base.href : resolveNavigationUrl(url, target.app.base).url;
-      await openAt(resolved, config.timeout);
+      await openAt(resolved, lifecycleMs());
     });
 
   /**
    * A steering hook ends at a fresh surface showing nothing, so the app is
    * reopened at its base URL through the same path as `app.open()`, and an
    * unreachable app after a restart is reported exactly as on first open.
-   * The hook and the reopen share one `config.timeout` budget. A target
+   * The hook and the reopen share one budget, `lifecycleMs`. A target
    * without an address, or whose engine cannot open one (a device relaunches
    * its pinned app inside the hook), has nothing to reopen.
    */
   const steer = (api: string, hook: (operation: OperationContext) => Promise<void>): Promise<void> =>
     steps.run('app', api, '', async () => {
-      const deadline = new Deadline(config.timeout);
+      const deadline = new Deadline(lifecycleMs());
       await hook(engine.operation(deadline.remaining()));
       if (target.app.base === undefined || !engine.session.verbs.has('navigate')) return;
       await openAt(target.app.base.href, deadline.remaining());
@@ -529,7 +531,7 @@ function createApp(environment: AttemptEnvironment, engine: LocatorEngine): App 
       if (openPath !== undefined && linkBase !== undefined) {
         const link = joinLink(linkBase, openPath);
         if (refusesLink(link)) throw new ConfigurationError('POLICY_DENIED', `app.open() refuses the link's scheme on target "${target.name}"`);
-        await engine.session.app.openLink(link, engine.operation(config.timeout));
+        await engine.session.app.openLink(link, engine.operation(lifecycleMs()));
         return;
       }
       if (openPath !== undefined) {
@@ -544,7 +546,7 @@ function createApp(environment: AttemptEnvironment, engine: LocatorEngine): App 
           `app.open() has nothing to open on target "${target.name}": it has no app URL, and engine ${target.engine?.name ?? 'none'} does not relaunch a pinned app`,
         );
       }
-      await engine.session.app.restart(engine.operation(config.timeout));
+      await engine.session.app.restart(engine.operation(lifecycleMs()));
     });
 
   return {

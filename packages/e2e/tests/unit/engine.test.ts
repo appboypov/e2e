@@ -165,6 +165,13 @@ describe('defineEngine', () => {
     ).toThrow(/state.restore must be a function/);
   });
 
+  it('refuses a fixture named like a method of an @e2e-dev/core session', () => {
+    for (const fixture of ['close', 'saveState', 'setDefaultTimeout']) {
+      expect(() => defineEngine(observingEngine({ fixtures: { [fixture]: () => ({}) } as never })), fixture)
+        .toThrow(expect.objectContaining({ code: 'INVALID_CONFIG', message: expect.stringContaining('is a method of every @e2e-dev/core session') }));
+    }
+  });
+
   it('binds validateApp, prepare, finish, and fixture factories to the spec', async () => {
     const bound: string[] = [];
     const spec: Engine = observingEngine({

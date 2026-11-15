@@ -140,6 +140,11 @@ function isGrammarName(name: ActingAction['name']): name is GrammarActionName {
   return !name.startsWith(PROJECT_TOOL_EVENT_PREFIX);
 }
 
+/** Typed text that holds a line break presses Enter, which a guard's `key` rule reads as that key. */
+function enterIn(value: string): { readonly key?: string } {
+  return /[\r\n]/.test(value) ? { key: 'Enter' } : {};
+}
+
 /** Keyboard input with no node of its own: a guard reads the focused node. */
 const KEYBOARD_ACTIONS: ReadonlySet<GrammarActionName> = new Set(['typeText', 'pressKey', 'dismissKeyboard']);
 
@@ -260,7 +265,7 @@ export class ActionDispatcher {
     return this.runAction('typeText', async () => {
       await this.session.keyboard.type(value, { replace }, this.accounting.actionOperation());
       return { name: 'typeText', value, replace };
-    });
+    }, enterIn(value));
   }
 
   private pressKey(key: string): Promise<void> {
@@ -318,6 +323,7 @@ export class ActionDispatcher {
     requireFinitePoint(point, verb);
     const nodeVerb = POINT_VERBS[verb].node;
     return this.queue.run(async () => {
+      await this.readForGuard();
       const observation = this.feed.requireLatest();
       const clamped = clampToViewport(point, observation.viewport);
       const hit = hitTest(observation, clamped);
@@ -370,6 +376,7 @@ export class ActionDispatcher {
     requireFinitePoint(from, 'dragAt');
     requireFinitePoint(to, 'dragAt');
     return this.queue.run(async () => {
+      await this.readForGuard();
       const observation = this.feed.requireLatest();
       const start = clampToViewport(from, observation.viewport);
       const end = clampToViewport(to, observation.viewport);
@@ -434,6 +441,7 @@ export class ActionDispatcher {
       if (this.accounting.closed) throw new AgentError('CANCELLED', 'the step has ended');
       if (call.mutates) {
         this.assertAllowed('tool');
+        await this.readForGuard();
         // A project tool names no node: under a guard with rules it is unidentified, denied unless the guard allows those.
         await this.guard({ name: `${PROJECT_TOOL_EVENT_PREFIX}${call.name}`, checked: false }, undefined, false);
         this.accounting.reserveAction();
@@ -441,7 +449,12 @@ export class ActionDispatcher {
         this.options.trace()?.recordGap(call.name);
       }
       const name = `${PROJECT_TOOL_EVENT_PREFIX}${call.name}`;
-      const value = await instrumentPhase(this.runtime, { api: this.accounting.api, kind: 'engine', phase: 'agent.action', name }, body);
+      let value: T;
+      try {
+        value = await instrumentPhase(this.runtime, { api: this.accounting.api, kind: 'engine', phase: 'agent.action', name }, body);
+      } finally {
+        if (call.mutates) this.feed.noteActed(SETTLE_AFTER.tool.look);
+      }
       if (call.mutates) {
         this.armAfter('tool');
         await this.notify('tool', (fields) => ({ ...fields, action: `${PROJECT_TOOL_EVENT_PREFIX}${call.name}`, summary: `ran ${call.name}` }));
@@ -564,7 +577,7 @@ export class ActionDispatcher {
     return this.commitTargeted('type', target, async (node) => {
       await this.session.perform(node.ref, { kind: 'fill', value, sensitive: false }, this.accounting.actionOperation());
       return { name: 'type', node, value };
-    });
+    }, enterIn(value));
   }
 
   private press(target: ExecutorTarget, key: string): Promise<void> {
@@ -817,6 +830,7 @@ export class ActionDispatcher {
       checked: false,
     };
     this.acting = acting;
+    await this.readForGuard();
     // An action whose node its body resolves is guarded there, on that node; any other here, before it starts.
     if (detail.point !== undefined) await this.guard(acting, detail.point.node, detail.point.identified);
     else if (!GUARDED_ON_NODE.has(name)) await this.guard(acting, KEYBOARD_ACTIONS.has(name) ? this.focusedNode() : undefined, true);
@@ -832,12 +846,29 @@ export class ActionDispatcher {
         (committed) => ({ detail: describeAction(committed, redaction).summary }),
       );
     } catch (cause) {
+      // A failed action may still have reached the app; one the guard or a policy refused never did.
+      if (toAgentError(cause).code !== 'POLICY_DENIED') this.feed.noteActed('held-still');
       this.accounting.checkpoint(cause);
       throw cause;
     }
     this.armAfter(action.name);
+    this.feed.noteActed(SETTLE_AFTER[action.name].look);
     this.recordTrace(action);
     await this.notify(action.name, (fields) => actionEvent(action, { ...fields, summary: describeAction(action, redaction).summary }));
+  }
+
+  /**
+   * Under a guard with rules, reads the screen the turn's earlier actions
+   * left, settled as the last one's policy asks, before the guard names what
+   * this action lands on. Without it a batched turn is judged on the screen
+   * from before those actions: a button they relabelled, a focus they moved,
+   * a page they left. Costs nothing when a settled look already followed the
+   * last action.
+   */
+  private async readForGuard(): Promise<void> {
+    if (this.runtime.guard?.guarding !== true || this.options.readOnly === true) return;
+    const settle = this.feed.unreadAction;
+    if (settle !== undefined) await this.feed.settleNow(settle);
   }
 
   /**
@@ -859,18 +890,19 @@ export class ActionDispatcher {
       ...(acting.destination === undefined ? {} : { destination: this.runtime.redact(acting.destination) }),
       ...(acting.key === undefined ? {} : { key: acting.key }),
     };
-    let decision: Awaited<ReturnType<typeof guard.decide>>;
+    let verdict: Awaited<ReturnType<typeof guard.decide>>;
     try {
-      decision = await guard.decide(proposed, identified, node === undefined ? {} : { node });
+      verdict = await guard.decide(proposed, identified, node === undefined ? {} : { node });
     } catch (cause) {
       // The program's own check failed: the step stops, as a failed onBeforeAction hook stops it.
       throw this.accounting.fatalize(new ActionHookError('ACTION_FAILED', `the guard's check failed before ${describeProposed(proposed)}: ${toAgentError(cause).message}`, { cause }));
     }
+    const { decision } = verdict;
     if (decision === 'allow') return;
     if (decision === 'stop') {
       // Settled now, while the step can still read the screen: it is the end state a recording of the step keeps.
       await this.feed.settleNow('held-still').catch(() => undefined);
-      throw this.accounting.fatalize(new GuardStop(proposed, this.feed.latest));
+      throw this.accounting.fatalize(new GuardStop(proposed, this.feed.latest, verdict.byCheck));
     }
     const why = identified ? 'the guard denies it' : 'it lands on nothing the screen lists, and the guard denies what it cannot identify';
     throw new AgentError('POLICY_DENIED', `${describeProposed(proposed)} is not allowed: ${why}`);

@@ -77,7 +77,9 @@ import { chatgpt } from '../../src/oauth/chatgpt.ts';
 import { copilot } from '../../src/oauth/copilot.ts';
 import { grok } from '../../src/oauth/grok.ts';
 import { opencodeConsole } from '../../src/oauth/opencode-console.ts';
-import { createAgent as createCoreAgent } from '@e2e-dev/core/agent';
+import {
+  createAgent as createCoreAgent, type CacheStore as CoreCacheStore, type CreateAgentOptions, type StepExecutor as CoreStepExecutor, type UncheckedAgent,
+} from '@e2e-dev/core/agent';
 import { launch, SessionState, type Host, type Session } from '@e2e-dev/core';
 import { defineEngine } from '../../src/engine/index.ts';
 // @ts-expect-error isDefinedTool left e2e/agent: config loading checks each tools entry itself
@@ -1102,3 +1104,17 @@ await liveAgent.act('checkout');
 await liveAgent.act('checkout', { agent: 'other' });
 // @ts-expect-error a guard rule names roles from the closed vocabulary
 createCoreAgent(gadgetSession, { guard: { stop: [{ role: 'pay-button' }] } });
+// Options held in a variable hide the cache from the compiler: act takes either form, and the runtime refuses the wrong one.
+declare const heldAgentOptions: CreateAgentOptions;
+const uncheckedAgent = createCoreAgent(gadgetSession, heldAgentOptions);
+void (uncheckedAgent satisfies UncheckedAgent);
+await uncheckedAgent.act('checkout', { cacheKey: 'checkout' });
+await uncheckedAgent.act('checkout');
+// @ts-expect-error an agent is created over a session, not a host
+createCoreAgent(gadgetHost, {});
+// @ts-expect-error nor over any object
+createCoreAgent({}, {});
+// A custom executor and a custom store are typed from the agent entry alone.
+declare const coreExecutor: CoreStepExecutor;
+declare const coreStore: CoreCacheStore;
+void createCoreAgent(gadgetSession, { executor: coreExecutor, cache: { store: coreStore } });

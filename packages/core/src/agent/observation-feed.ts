@@ -97,6 +97,12 @@ export class ObservationFeed {
    * repairs what already worked.
    */
   private pendingChange: PendingChange | undefined;
+  /**
+   * How far a look must settle to read what the newest committed action left;
+   * undefined once a settled look has read it. While set, the newest
+   * observation predates that action, and what it lists may be gone or renamed.
+   */
+  private unread: SettleMode | undefined;
   /** The last pixel decision recorded on this step: `allowed`, or the withheld reason. */
   private pixelsDecided: string | undefined;
   /** Why requested pixels did not become model input, when they did not. */
@@ -254,6 +260,16 @@ export class ObservationFeed {
     this.pendingChange = shape === undefined ? undefined : { shape, deadlineMs: Date.now() + waitMs };
   }
 
+  /** Marks the newest observation as taken before an action ran; `look` is how far the action's policy settles the next one. */
+  noteActed(look: SettleMode): void {
+    this.unread = look;
+  }
+
+  /** How far a look must settle to read the last action's effect; undefined when the newest observation already does. */
+  get unreadAction(): SettleMode | undefined {
+    return this.unread;
+  }
+
   /**
    * Resolves an executor target against the newest observation. An id the
    * newest observation no longer carries, but a recent one did, is re-found
@@ -342,6 +358,7 @@ export class ObservationFeed {
       () => this.captureSettled(mode, false, settledWhen),
       observationDetail,
     );
+    if (mode !== 'raw') this.unread = undefined;
     this.publish(observation);
     return observation;
   }
@@ -365,6 +382,7 @@ export class ObservationFeed {
       () => this.captureSettled(mode, pixels),
       observationDetail,
     );
+    if (mode !== 'raw') this.unread = undefined;
     this.publish(observation);
     return observation;
   }

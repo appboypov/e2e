@@ -463,6 +463,12 @@ export interface ActionTrace {
    * action, with no model call; absent on a step that finished.
    */
   readonly stop?: ProposedAction;
+  /**
+   * What decided `stop` when a rule did not: the guard's `check` function,
+   * whose logic no key can carry, so a replay asks it again before it ends
+   * the step there. Absent for a rule's stop, which the key vouches for.
+   */
+  readonly stopBy?: 'check';
 }
 
 /**

@@ -9,9 +9,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveProjectConfig, type ResolvedConfig, type ResolvedTarget } from '../config/resolve.ts';
-import type { EngineHandle } from '../engine/index.ts';
+import { isEngineHandle, type EngineHandle } from '../engine/index.ts';
+import { SESSION_CONTROLS } from '../engine/manifest.ts';
 import { classifyError, ConfigurationError, E2EError, InfrastructureError, serializeError, TestError } from '../internal/errors.ts';
-import { rejectUnknownOptions } from '../internal/options.ts';
+import { rejectUnknownKeys, rejectUnknownOptions } from '../internal/options.ts';
 import { MAX_TIMER_MS } from '../internal/time.ts';
 import { redactOpening } from '../run/redact-opening.ts';
 import { processSecrets, registerStaticSecrets, sessionLedger } from '../run/secrecy.ts';
@@ -21,7 +22,7 @@ import type { StandaloneAttempt } from '../run/standalone-attempt.ts';
 import { secretHandle } from '../secrets.ts';
 import type { App, Screen, Secret, TargetApp } from '../types.ts';
 import { FailureWatch, registerSession } from './internals.ts';
-import { closeOnSignals } from './signals.ts';
+import { closeOnSignals, engineListeners } from './signals.ts';
 import { restoredStateFor, SessionState, type StateIdentity } from './state.ts';
 
 /** What every session holds, whatever its engine. */
@@ -43,16 +44,19 @@ export interface LaunchOptions {
   /**
    * Secret values by name, at least 6 characters each. Fill one through
    * `host.secret(name)`; an agent receives it by name only. The values are
-   * redacted from every error and screen reading this host produces.
+   * redacted from what `screen.tree()` and the agent read, and from the
+   * errors this host throws. A locator read such as `textContent()` returns
+   * the page's text as it is.
    */
   readonly secrets?: Readonly<Record<string, string>> | undefined;
   /** Shows the browser window; default false. Devices ignore it. */
   readonly headed?: boolean | undefined;
   /**
-   * Default timeout of one operation in milliseconds (an action, a wait, a
-   * read). Default 30000 for actions and 5000 for waits and reads, the
-   * runner's. A session changes it with `setDefaultTimeout`. There is no
-   * session deadline.
+   * Default timeout of one operation in milliseconds: an action, a wait, a
+   * read, and `app.open()` or `app.restart()`. Without it an action, a wait,
+   * or a read gets 30000, and an app open or restart 120000. A session
+   * changes it with `setDefaultTimeout`. An agent step has its own, `act`'s
+   * `timeout`. There is no session deadline.
    */
   readonly timeout?: number | undefined;
   /** Cancels opening the host, and every session and operation on it. Closing still releases what it opened. */
@@ -64,12 +68,12 @@ export interface LaunchOptions {
    */
   readonly handleSignals?: boolean | undefined;
   /**
-   * Where screenshots, downloads, and recordings are written. Default: a
-   * fresh directory under the system temp directory, deleted when the host
-   * closes.
+   * Where screenshots, downloads, and recordings are written, from `cwd`.
+   * Default: a fresh directory under the system temp directory, deleted
+   * when the host closes.
    */
   readonly artifactsDir?: string | undefined;
-  /** The directory upload paths and relative files resolve against; default `process.cwd()`. */
+  /** The directory upload paths and relative files resolve against, `artifactsDir` and an agent's cache directory included; default `process.cwd()`. */
   readonly cwd?: string | undefined;
   /** The environment the engine reads; default `process.env`. */
   readonly env?: NodeJS.ProcessEnv | undefined;
@@ -95,7 +99,7 @@ export type Session<Fixtures extends object = {}> = CoreFixtures & Fixtures & Se
 export interface SessionControls extends AsyncDisposable {
   /** Captures the session's state (cookies, storage, app data) in memory. Persist it only with `export({ key })`. */
   saveState(): Promise<SessionState>;
-  /** The default timeout of operations started from now on, in milliseconds: actions, waits, and reads. */
+  /** The default timeout of operations started from now on, in milliseconds: actions, waits, reads, and app opens and restarts. */
   setDefaultTimeout(timeout: number): void;
   /** Ends the session. Idempotent. Throws an `AggregateError` of the failures closing found, such as a cleanup that did not finish. */
   close(): Promise<void>;
@@ -114,7 +118,10 @@ export interface Host<Fixtures extends object = {}> extends AsyncDisposable {
 }
 
 const LAUNCH_OPTION_KEYS = ['app', 'secrets', 'headed', 'timeout', 'signal', 'handleSignals', 'artifactsDir', 'cwd', 'env', 'onNotice'] as const;
+const LAUNCH_APP_KEYS = ['url', 'bundleId', 'appPath', 'linkBase', 'identity', 'launchArguments', 'permissions'] as const satisfies readonly (keyof LaunchApp)[];
 const SESSION_OPTION_KEYS = ['state', 'signal'] as const;
+/** The finished steps a session keeps, what its agent reads as the steps before its own; a bot's session runs for days. */
+const RETAINED_STEPS = 500;
 /** The fixtures every session exposes; the engine's own join them. */
 const CORE_FIXTURES = ['screen', 'app', 'platform'] as const;
 
@@ -124,17 +131,29 @@ const CORE_FIXTURES = ['screen', 'app', 'platform'] as const;
  * on it. Each `launch` needs its own engine instance: `launch(web())`.
  */
 export async function launch<Fixtures extends object = {}>(engine: EngineHandle<Fixtures>, options: LaunchOptions = {}): Promise<Host<Fixtures>> {
+  if (!isEngineHandle(engine)) {
+    const got = typeof engine === 'function' ? 'a function' : engine === null ? 'null' : typeof engine;
+    throw new TestError('INVALID_ARGUMENT', `launch takes an engine as its first argument and got ${got}: call the engine's factory, such as launch(web()) with web from @e2e-dev/web/engine`);
+  }
   rejectUnknownOptions('launch', options, LAUNCH_OPTION_KEYS);
+  if (options.app !== undefined) rejectUnknownKeys('launch app', options.app, LAUNCH_APP_KEYS, 'INVALID_ARGUMENT');
   const timeout = options.timeout;
   if (timeout !== undefined && (!Number.isInteger(timeout) || timeout <= 0)) {
     throw new TestError('INVALID_ARGUMENT', 'launch timeout must be a positive integer number of milliseconds');
   }
   const ownsArtifacts = options.artifactsDir === undefined;
-  const output = options.artifactsDir === undefined ? await mkdtemp(path.join(os.tmpdir(), 'e2e-core-')) : path.resolve(options.artifactsDir);
+  const projectRoot = path.resolve(options.cwd ?? process.cwd());
+  const output = options.artifactsDir === undefined ? await mkdtemp(path.join(os.tmpdir(), 'e2e-core-')) : path.resolve(projectRoot, options.artifactsDir);
   const removeOutput = (): Promise<void> => ownsArtifacts ? rm(output, { recursive: true, force: true }) : Promise.resolve();
+  const handlesSignals = options.handleSignals !== false;
+  /** Runs an opening, with the signal listeners the engine registers in it marked as the engine's. */
+  const opening = async <T>(open: () => Promise<T>): Promise<T> => {
+    const mark = handlesSignals ? engineListeners() : () => undefined;
+    try { return await redactOpening(open); } finally { mark(); }
+  };
   let opened: { readonly config: ResolvedConfig; readonly target: ResolvedTarget; readonly host: StandaloneHost };
   try {
-    opened = await redactOpening(async () => {
+    opened = await opening(async () => {
       const env = options.env ?? process.env;
       const resolved = resolveProjectConfig(
         {
@@ -146,7 +165,7 @@ export async function launch<Fixtures extends object = {}>(engine: EngineHandle<
           ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
           ...(timeout === undefined ? {} : { actionTimeout: timeout, assertionTimeout: timeout }),
         },
-        { projectRoot: path.resolve(options.cwd ?? process.cwd()), env },
+        { projectRoot, env },
       );
       // Set past resolution, which keeps a run's output inside its project: a host's lives where the program says.
       const config: ResolvedConfig = { ...resolved, output };
@@ -169,6 +188,7 @@ export async function launch<Fixtures extends object = {}>(engine: EngineHandle<
     engine: target.engine?.name ?? 'none',
     platform: target.platform,
     appIdentity: targetIdentity(target).appIdentity,
+    ...(target.app.identity === undefined ? {} : { app: target.app.identity }),
   };
   let closing: Promise<void> | undefined;
   /** The open session's close, so the host closes it the way a program would, its agents' recordings settled. */
@@ -188,7 +208,7 @@ export async function launch<Fixtures extends object = {}>(engine: EngineHandle<
     })();
     return closing;
   };
-  const unregister = options.handleSignals === false ? () => undefined : closeOnSignals(close);
+  const unregister = handlesSignals ? closeOnSignals(close) : () => undefined;
   return {
     platform: target.platform,
     secret: (name: string) => {
@@ -199,7 +219,7 @@ export async function launch<Fixtures extends object = {}>(engine: EngineHandle<
       }
       return secretHandle({ name, purpose: registered.purpose });
     },
-    newSession: (sessionOptions = {}) => redactOpening(async () => {
+    newSession: (sessionOptions = {}) => opening(async () => {
       rejectUnknownOptions('newSession', sessionOptions, SESSION_OPTION_KEYS);
       if (closing !== undefined) throw new InfrastructureError('WORKER_PROTOCOL', 'the host is closed');
       const state = sessionOptions.state === undefined ? undefined : restoredStateFor(sessionOptions.state, identity);
@@ -209,10 +229,14 @@ export async function launch<Fixtures extends object = {}>(engine: EngineHandle<
         // No session deadline: each operation keeps its own timeout.
         timeoutMs: MAX_TIMER_MS,
         onProgress: failures.onProgress,
+        closed: () => new E2EError('infrastructure', 'CANCELLED', 'the session is closed'),
+        // No report stands between an operation's error and the program, so the error itself is classified and redacted.
+        redactThrown: true,
+        retainSteps: RETAINED_STEPS,
         ...(state === undefined ? {} : { state }),
       });
       failures.watch(attempt.steps);
-      const session = coreSession<Fixtures>(attempt, config, identity, target, failures, () => {
+      const session = coreSession<Fixtures>(attempt, config, identity, target, failures, timeout, () => {
         if (closeOpen === session.close) closeOpen = undefined;
       });
       closeOpen = session.close;
@@ -230,10 +254,13 @@ function coreSession<Fixtures extends object>(
   identity: StateIdentity,
   target: ResolvedTarget,
   failures: FailureWatch,
+  timeout: number | undefined,
   onClosed: () => void,
 ): Session<Fixtures> {
   const { fixtures } = attempt;
   const engine = attempt.agentRuntime.engine;
+  const setDefaultTimeout = (ms: number): void => engine.setDefaultTimeouts({ action: ms, assertion: ms, lifecycle: ms });
+  if (timeout !== undefined) setDefaultTimeout(timeout);
   const closers: (() => Promise<void>)[] = [];
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
@@ -258,15 +285,16 @@ function coreSession<Fixtures extends object>(
       // Every value the session knows, configured ones too: the state may restore on a host launched without them.
       return SessionState.captured(identity, state, sessionLedger(attempt.session, config.allSecrets).entries());
     }),
-    setDefaultTimeout: (timeout: number) => {
-      if (!Number.isInteger(timeout) || timeout <= 0) throw new TestError('INVALID_ARGUMENT', 'setDefaultTimeout takes a positive integer number of milliseconds');
-      engine.setDefaultTimeouts({ action: timeout, assertion: timeout });
+    setDefaultTimeout: (ms: number) => {
+      if (!Number.isInteger(ms) || ms <= 0) throw new TestError('INVALID_ARGUMENT', 'setDefaultTimeout takes a positive integer number of milliseconds');
+      setDefaultTimeout(ms);
     },
     close,
     [Symbol.asyncDispose]: close,
-  };
+    // Every control is a name `defineEngine` keeps from fixtures, so none can meet a fixture on the session.
+  } satisfies Record<(typeof SESSION_CONTROLS)[number] | typeof Symbol.asyncDispose, unknown>;
   // Built property by property: the fixtures are accessors, each acquired on first touch, and their names come from the engine.
-  const session: Session<Fixtures> = Object.create(null);
+  const session = {} as Session<Fixtures>;
   for (const name of [...CORE_FIXTURES, ...Object.keys(target.engine?.fixtures ?? {})]) {
     Object.defineProperty(session, name, { enumerable: true, get: () => Reflect.get(fixtures, name) as unknown });
   }

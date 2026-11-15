@@ -26,6 +26,7 @@ import type { StepCacheInfo } from '../run/steps.ts';
 import type { JsonValue, ProposedAction } from '../types.ts';
 import type { RecordableAction } from './actions.ts';
 import { ActionHookError, AgentError, isAgentError, isModelUnreachable } from './error.ts';
+import { describeProposed } from './guard.ts';
 import { isRuntimeHardStop, type ReplayedPrefix, type StepVerdict } from './executor.ts';
 import {
   replayTrace,
@@ -69,6 +70,14 @@ export interface StepCacheOptions {
   readonly maxActions: number;
   /** Timeline index of the step being dispatched. */
   readonly stepIndex: number;
+  /** Asks the agent's guard whether its `check` still stops before a recorded action; absent without a guard. */
+  readonly stillStops?: (action: ProposedAction) => Promise<boolean>;
+}
+
+/** The action a guard stopped a step before, and whether its `check` decided so. */
+export interface RecordedStop {
+  readonly action: ProposedAction;
+  readonly byCheck: boolean;
 }
 
 /**
@@ -346,7 +355,7 @@ export class StepTraceSession {
    *   that diverged hands off again next run, where a model that answers
    *   re-records it.
    */
-  async conclude(outcome: StepOutcome, verdictSummary: string | undefined, recordedBy?: RecordedModel, stop?: ProposedAction): Promise<void> {
+  async conclude(outcome: StepOutcome, verdictSummary: string | undefined, recordedBy?: RecordedModel, stop?: RecordedStop): Promise<void> {
     const recorder = this.recorder;
     if (recorder === undefined) return;
     if (this.handedOffMs !== undefined) this.executorCompletedMs = Date.now();
@@ -462,13 +471,18 @@ export class StepTraceSession {
     });
     this.consumedReplay = true;
     const end = outcome.completed && start?.kind === 'semantic' ? await this.endStateMatches(trace, start, screens) : undefined;
+    // A stop the guard's `check` decided is this program's answer, not the key's: asked again, and the model goes on when it no longer stops.
+    const allowedNow = outcome.completed && end?.matches === true && trace.stop !== undefined && trace.stopBy === 'check' &&
+      !(await this.stillStops(trace.stop));
     const stopReason: HandOffReason | undefined = outcome.completed
       ? end?.matches === true
-        ? undefined
+        ? allowedNow ? 'gap' : undefined
         : 'end-mismatch'
       : (outcome.stopReason ?? 'action-failed');
     if (stopReason === undefined) return this.selfFinalize(trace, outcome);
-    const detail = stopDetail(outcome, stopReason, trace, end?.failure);
+    const detail = allowedNow
+      ? `every recorded action ran, and the guard's check no longer stops before ${describeProposed(trace.stop!)}`
+      : stopDetail(outcome, stopReason, trace, end?.failure);
     if (outcome.executed === 0) {
       // A prefix that performed nothing is a miss with a name, not a hand-off:
       // the executor starts from the top and owes the notice nothing.
@@ -549,6 +563,15 @@ export class StepTraceSession {
     }
   }
 
+  /** Whether the guard's `check` still stops before a recorded action; a check that fails is asked again live, where its failure stops the step. */
+  private async stillStops(action: ProposedAction): Promise<boolean> {
+    try {
+      return (await this.options.stillStops?.(action)) === true;
+    } catch {
+      return false;
+    }
+  }
+
   private selfFinalize(trace: ActionTrace, outcome: ReplayOutcome): StepVerdict {
     this.replayedWhole = true;
     this.replayedStop = trace.stop;
@@ -607,7 +630,7 @@ export class StepTraceSession {
    * does a step that changed nothing a replay could check, no node and no
    * route: a trace without its check would replay on mechanics alone.
    */
-  private async stage(recorder: TraceRecorder, verdictSummary: string | undefined, recordedBy: RecordedModel | undefined, stop: ProposedAction | undefined): Promise<StageOutcome> {
+  private async stage(recorder: TraceRecorder, verdictSummary: string | undefined, recordedBy: RecordedModel | undefined, stop: RecordedStop | undefined): Promise<StageOutcome> {
     if (!this.host.traceEligible || this.startNodes === undefined || recorder.recordedCount === 0) return 'skipped';
     const observation = this.stoppedScreen ?? await probeScreen(this.host, 'held-still');
     if (!this.host.traceEligible || observation?.kind !== 'semantic') return 'skipped';
@@ -636,7 +659,7 @@ export class StepTraceSession {
       // baseline. The replay and executor turn are not app settling time.
       endWaitMs: Date.now() - this.endWaitBaselineMs(recorder) + END_WAIT_MARGIN_MS,
       keyedBy: this.claim.context,
-      ...(stop === undefined ? {} : { stop }),
+      ...(stop === undefined ? {} : { stop: stop.action, stopByCheck: stop.byCheck }),
     });
     if (trace === undefined) return 'skipped';
     // A trace with no start anchor — no recorded path (a surface without a URL)

@@ -8,6 +8,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { EngineState } from '../engine/index.ts';
 import { ConfigurationError, TestError } from '../internal/errors.ts';
+import { rejectUnknownOptions } from '../internal/options.ts';
 import { canonicalJson, timestamp } from '../internal/ids.ts';
 import type { RestoredState } from '../run/engine-sessions.ts';
 import type { SavedSecrets } from '../run/secrecy.ts';
@@ -17,6 +18,8 @@ export interface StateIdentity {
   readonly engine: string;
   readonly platform: string;
   readonly appIdentity: string;
+  /** The app as a message names it: its URL, bundle id, or declared identity. Absent on an imported state, whose document holds the digest alone. */
+  readonly app?: string;
 }
 
 /** The `session-state-1` wire format, pinned by `schema/session-state-v1.schema.json`. */
@@ -46,6 +49,7 @@ interface StatePayload {
 }
 
 const KEY_BYTES = 32;
+const KEY_OPTION_KEYS = ['key'] as const;
 
 /** The options of `export` and `import`: the AES-256-GCM key, 32 bytes the caller keeps. */
 export interface SessionStateKeyOptions {
@@ -74,11 +78,13 @@ export class SessionState {
   /**
    * Encrypts the state with `key` (AES-256-GCM, 32 bytes) into a
    * `session-state-1` document, as UTF-8 bytes. The document names the
-   * engine, platform, and app in the clear, authenticated; everything the
-   * state holds is in the ciphertext.
+   * engine, the platform, a digest of the app, and the names of the secrets
+   * in the clear, authenticated; everything the state holds, secret values
+   * included, is in the ciphertext.
    */
   // oxlint-disable-next-line typescript/require-await -- async so a bad key rejects instead of throwing
   async export(options: SessionStateKeyOptions): Promise<Uint8Array> {
+    rejectUnknownOptions('SessionState.export', options, KEY_OPTION_KEYS);
     const key = requireKey(options, 'SessionState.export');
     const { identity, saved } = held.get(this)!;
     const iv = randomBytes(12);
@@ -111,6 +117,7 @@ export class SessionState {
    */
   // oxlint-disable-next-line typescript/require-await -- async so a bad document rejects instead of throwing
   static async import(data: Uint8Array, options: SessionStateKeyOptions): Promise<SessionState> {
+    rejectUnknownOptions('SessionState.import', options, KEY_OPTION_KEYS);
     const key = requireKey(options, 'SessionState.import');
     if (!(data instanceof Uint8Array)) throw new TestError('INVALID_ARGUMENT', 'SessionState.import data must be a Uint8Array');
     const document = parseDocument(new TextDecoder().decode(data));
@@ -157,10 +164,17 @@ export function restoredStateFor(state: unknown, host: StateIdentity): RestoredS
   const entry = state instanceof SessionState ? held.get(state) : undefined;
   if (entry === undefined) throw new TestError('INVALID_ARGUMENT', 'newSession state must be a SessionState from saveState() or SessionState.import()');
   const { identity, saved } = entry;
-  if (identity.engine !== host.engine || identity.platform !== host.platform || identity.appIdentity !== host.appIdentity) {
+  if (identity.engine !== host.engine || identity.platform !== host.platform) {
     throw new ConfigurationError(
       'SESSION_MISMATCH',
-      `the session state was captured on engine ${identity.engine} (${identity.platform}) for another app or engine than this host's ${host.engine} (${host.platform})`,
+      `the session state was saved on engine ${identity.engine} (${identity.platform}), and this host runs ${host.engine} (${host.platform}); a state restores only on the engine and platform that saved it`,
+    );
+  }
+  if (identity.appIdentity !== host.appIdentity) {
+    throw new ConfigurationError(
+      'SESSION_MISMATCH',
+      `the session state was saved for ${identity.app ?? 'another app'}, and this host drives ${host.app ?? 'an app with no URL or bundle id'}; a state restores only on the app it was saved for. ` +
+        'When both are one app at two addresses, give both hosts the same app.identity',
     );
   }
   if (saved.state.expiresAt !== undefined && Date.parse(saved.state.expiresAt) <= Date.now()) {

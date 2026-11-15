@@ -2,7 +2,11 @@
  * The guard of an `@e2e-dev/core` agent: which actions the agent may not take on
  * its own. Checked by the action dispatcher immediately before each dispatch,
  * replayed actions included, against the node the action lands on and the
- * screen's location, so a recording can never carry the agent past it.
+ * screen's location, so a recording can never carry the agent past it. The
+ * dispatcher reads both off a look taken after the action before it, so a
+ * turn that batches actions is checked against the screen each one left. A
+ * screen that changes by itself between that look and the dispatch is past
+ * what a guard can see.
  *
  * `deny` refuses the action with `POLICY_DENIED`, which the model reads and
  * plans around. `stop` ends the `act` call before the action, as a pass whose
@@ -10,6 +14,7 @@
  * payment, an order, a deletion.
  */
 
+import { parseKey, type ParsedKey } from '../engine/contract.ts';
 import { TestError } from '../internal/errors.ts';
 import { canonicalDigest } from '../internal/ids.ts';
 import { compareText, toTextPattern, type TextPattern } from '../internal/text.ts';
@@ -18,9 +23,19 @@ import { PROJECT_TOOL_EVENT_PREFIX } from './action-names.ts';
 import { AgentError } from './error.ts';
 import type { AgentObservation, RedactedNode } from './observation.ts';
 
+/** A guard's answer for one action, and whether its `check` function gave it rather than a rule. */
+export interface GuardVerdict {
+  readonly decision: GuardDecision;
+  readonly byCheck: boolean;
+}
+
 /** A guard's rules compiled once, with what an action and its node are checked against. */
 export interface CompiledGuard {
-  decide(action: ProposedAction, identified: boolean, raw: { readonly node?: RedactedNode }): Promise<GuardDecision>;
+  /** False for a guard with no rule and no `check`: it allows everything and reads nothing. */
+  readonly guarding: boolean;
+  decide(action: ProposedAction, identified: boolean, raw: { readonly node?: RedactedNode }): Promise<GuardVerdict>;
+  /** Whether `check` still stops before `action`, a stop it decided when the step was recorded. */
+  stillStops(action: ProposedAction): Promise<boolean>;
 }
 
 interface CompiledRule {
@@ -30,7 +45,7 @@ interface CompiledRule {
   readonly testId?: TextPattern;
   readonly url?: TextPattern;
   readonly destination?: TextPattern;
-  readonly key?: string;
+  readonly key?: ParsedKey;
   readonly actions?: ReadonlySet<string>;
 }
 
@@ -52,19 +67,25 @@ export function compileGuard(guard: Guard, label = 'guard'): CompiledGuard {
   }
   const guarding = stop.length > 0 || deny.length > 0 || check !== undefined;
   const unidentified = guard.unidentified ?? 'deny';
+  const ask = async (action: ProposedAction): Promise<GuardDecision> => {
+    const decision = await check!(Object.freeze({ ...action }));
+    if (decision !== 'allow' && decision !== 'deny' && decision !== 'stop') {
+      throw new TestError('INVALID_ARGUMENT', `${label}.check must return "allow", "deny", or "stop"; got ${JSON.stringify(decision)}`);
+    }
+    return decision;
+  };
+  const ruled = (decision: GuardDecision): GuardVerdict => ({ decision, byCheck: false });
   return {
+    guarding,
     async decide(action, identified, raw) {
-      if (!guarding) return 'allow';
-      if (!identified && unidentified === 'deny') return 'deny';
-      if (stop.some((rule) => matches(rule, action, raw.node))) return 'stop';
-      if (deny.some((rule) => matches(rule, action, raw.node))) return 'deny';
-      if (check === undefined) return 'allow';
-      const decision = await check(Object.freeze({ ...action }));
-      if (decision !== 'allow' && decision !== 'deny' && decision !== 'stop') {
-        throw new TestError('INVALID_ARGUMENT', `${label}.check must return "allow", "deny", or "stop"; got ${JSON.stringify(decision)}`);
-      }
-      return decision;
+      if (!guarding) return ruled('allow');
+      if (!identified && unidentified === 'deny') return ruled('deny');
+      if (stop.some((rule) => matches(rule, action, raw.node))) return ruled('stop');
+      if (deny.some((rule) => matches(rule, action, raw.node))) return ruled('deny');
+      if (check === undefined) return ruled('allow');
+      return { decision: await ask(action), byCheck: true };
     },
+    stillStops: async (action) => check !== undefined && (await ask(action)) === 'stop',
   };
 }
 
@@ -80,9 +101,15 @@ function compileRule(rule: GuardRule, label: string): CompiledRule {
     if (!RULE_KEYS.has(key)) throw new TestError('INVALID_ARGUMENT', `${label} has an unknown key "${key}"; expected role, name, text, testId, url, destination, key, or actions`);
   }
   if (rule.role !== undefined && typeof rule.role !== 'string') throw new TestError('INVALID_ARGUMENT', `${label}.role must be a role name`);
-  if (rule.key !== undefined && typeof rule.key !== 'string') throw new TestError('INVALID_ARGUMENT', `${label}.key must be a key such as "Enter"`);
-  if (rule.actions !== undefined && (!Array.isArray(rule.actions) || !rule.actions.every((action) => typeof action === 'string'))) {
-    throw new TestError('INVALID_ARGUMENT', `${label}.actions must be an array of action names`);
+  const key = rule.key === undefined ? undefined : typeof rule.key === 'string' ? parseKey(rule.key) : undefined;
+  if (rule.key !== undefined && key === undefined) {
+    throw new TestError('INVALID_ARGUMENT', `${label}.key ${JSON.stringify(rule.key)} is not a key: write it as press does, such as "Enter" or "Control+s"`);
+  }
+  if (rule.actions !== undefined && !Array.isArray(rule.actions)) throw new TestError('INVALID_ARGUMENT', `${label}.actions must be an array of action names`);
+  for (const action of rule.actions ?? []) {
+    if (typeof action !== 'string' || !isGuardedActionName(action)) {
+      throw new TestError('INVALID_ARGUMENT', `${label}.actions names ${JSON.stringify(action)}, which is no action: use a name such as "tap", "type", "navigate", or "tool:<name>"`);
+    }
   }
   return {
     ...(rule.role === undefined ? {} : { role: rule.role }),
@@ -91,7 +118,7 @@ function compileRule(rule: GuardRule, label: string): CompiledRule {
     ...(rule.testId === undefined ? {} : { testId: toTextPattern(rule.testId) }),
     ...(rule.url === undefined ? {} : { url: toTextPattern(rule.url) }),
     ...(rule.destination === undefined ? {} : { destination: toTextPattern(rule.destination) }),
-    ...(rule.key === undefined ? {} : { key: rule.key }),
+    ...(key === undefined ? {} : { key }),
     ...(rule.actions === undefined ? {} : { actions: new Set(rule.actions) }),
   };
 }
@@ -99,10 +126,25 @@ function compileRule(rule: GuardRule, label: string): CompiledRule {
 const textMatches = (actual: string | undefined, pattern: TextPattern | undefined): boolean =>
   pattern === undefined || (actual !== undefined && compareText(actual, pattern, { mode: 'equals', normalize: true }));
 
+/**
+ * Whether an action's key is the rule's. A rule that names no modifier
+ * matches the key under any of them, so `Enter` covers `Shift+Enter`, which
+ * submits a form as well; a rule that names modifiers matches exactly those.
+ */
+function keyMatches(rule: ParsedKey, pressed: string | undefined): boolean {
+  const key = pressed === undefined ? undefined : parseKey(pressed);
+  if (key === undefined) return false;
+  const same = rule.key.kind === 'named'
+    ? key.key.kind === 'named' && key.key.name === rule.key.name
+    : key.key.kind === 'char' && key.key.char.toLowerCase() === rule.key.char.toLowerCase();
+  if (!same || rule.modifiers.length === 0) return same;
+  return rule.modifiers.length === key.modifiers.length && rule.modifiers.every((modifier) => key.modifiers.includes(modifier));
+}
+
 /** Whether every field the rule sets matches the action. A node field never matches an action with no node. */
 function matches(rule: CompiledRule, action: ProposedAction, node: RedactedNode | undefined): boolean {
   if (rule.actions !== undefined && !rule.actions.has(action.kind)) return false;
-  if (rule.key !== undefined && action.key !== rule.key) return false;
+  if (rule.key !== undefined && !keyMatches(rule.key, action.key)) return false;
   if (!textMatches(action.url, rule.url)) return false;
   if (!textMatches(action.destination, rule.destination)) return false;
   if (rule.role === undefined && rule.name === undefined && rule.text === undefined && rule.testId === undefined) return true;
@@ -154,6 +196,8 @@ export class GuardStop extends AgentError {
     readonly action: ProposedAction,
     /** The screen the step stopped on, settled while the step could still read it. */
     readonly screen: AgentObservation | undefined,
+    /** True when the guard's `check` decided the stop, which a replay asks again; a rule's stop is in the recording's key. */
+    readonly byCheck = false,
   ) {
     super('POLICY_DENIED', `the guard stopped the agent before ${describeProposed(action)}`);
     this.name = 'GuardStop';

@@ -117,7 +117,7 @@ function validateApp(app: EngineAppDeclaration, { targetName }: EngineAppCheckIn
   if (app.bundleId === undefined && app.appPath === undefined) {
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      `${where} needs app.bundleId or app.appPath: a mobile() target launches an installed app, targets: [{ engine: mobile({ platform }), app: { bundleId: 'com.example.app' } }]`,
+      `${where} needs app.bundleId or app.appPath: mobile() launches an installed app, such as app: { bundleId: 'com.example.app' }`,
     );
   }
   if (app.bundleId !== undefined && isLink(app.bundleId)) {

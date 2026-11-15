@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { StepExecutor, StepExecutorContext } from '@e2e-dev/core/lib/agent/executor';
 import { createAgent } from '@e2e-dev/core/agent';
-import { launch, SessionState, type Host } from '@e2e-dev/core';
+import { launch, SessionState, type Host, type Session } from '@e2e-dev/core';
 import { createFakeEngine, FAKE_APP } from '../helpers/fake-engine.ts';
 import type { ScriptedNode } from '../helpers/scripted-scene.ts';
 
@@ -131,6 +131,37 @@ describe('e2e/core', { timeout: 60_000 }, () => {
     await expect(host(fake.engine)).rejects.toMatchObject({ code: 'WORKER_PROTOCOL' });
   });
 
+  it('refuses what is not an engine, an app key it does not take, and a relative artifactsDir resolves from cwd', async () => {
+    const web = () => createFakeEngine().engine;
+    await expect(launch(web as never)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringContaining('got a function') });
+    await expect(launch(undefined as never)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringContaining('launch(web())') });
+    await expect(host(web(), { app: { ...FAKE_APP, environment: 'staging' } as never })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+    const opened = await host(createFakeEngine({ scene: shop, artifacts: true }).engine, { app: FAKE_APP, artifactsDir: 'shots' });
+    const session = await opened.newSession();
+    await session.app.open('/');
+    expect(await session.app.screenshot('product')).toContain(path.join(dir, 'shots'));
+    expect(String(session)).toBe('[object Object]');
+    await session.close();
+  });
+
+  it('says a closed session is closed, and redacts a secret from the error an operation throws', async () => {
+    const fake = createFakeEngine({
+      scene: shop,
+      onNavigate: (url) => { if (url.endsWith('/broken')) throw new Error('the page printed hunter2-secret and stopped'); },
+    });
+    const opened = await host(fake.engine, { app: FAKE_APP, secrets: { SHOP_PASSWORD: 'hunter2-secret' } });
+    const session = await opened.newSession();
+    const failure = await session.app.open('/broken').then(() => undefined, (cause: Error) => cause);
+    // Whatever an engine throws reaches the program with a code.
+    expect(failure).toMatchObject({ code: 'ENGINE_FAILURE', message: expect.stringContaining('the page printed') });
+    expect(`${failure?.message} ${failure?.stack} ${String((failure?.cause as Error | undefined)?.message)}`).not.toContain('hunter2-secret');
+    await session.close();
+    await expect(session.screen.getByRole('button', 'Add to cart').tap()).rejects.toMatchObject({ code: 'CANCELLED', message: expect.stringContaining('the session is closed') });
+    await expect(session.app.open('/')).rejects.toMatchObject({ code: 'CANCELLED' });
+    // A read reaches the engine with no step around it, and says the same.
+    await expect(session.screen.getByTestId('sale-price').count()).rejects.toMatchObject({ code: 'CANCELLED', message: 'the session is closed' });
+  });
+
   it('saves state in memory, exports it only encrypted, and restores it on a host of the same engine and app', async () => {
     const fake = createFakeEngine({ scene: shop, state: true });
     const opened = await host(fake.engine, { app: FAKE_APP });
@@ -146,6 +177,7 @@ describe('e2e/core', { timeout: 60_000 }, () => {
     expect(new TextDecoder().decode(bytes)).not.toContain('"ok"');
     await expect(SessionState.import(bytes, { key: new Uint8Array(32) })).rejects.toMatchObject({ code: 'SESSION_INVALID' });
     await expect(state.export({ key: new Uint8Array(16) })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+    await expect(state.export({ key, plaintext: true } as never)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 
     const restored = await SessionState.import(bytes, { key });
     const second = await opened.newSession({ state: restored });
@@ -153,7 +185,12 @@ describe('e2e/core', { timeout: 60_000 }, () => {
     expect(fake.restoredStates).toEqual([{ format: 'fake-state', version: 1, data: { ok: true } }]);
 
     const elsewhere = await host(createFakeEngine({ state: true }).engine, { app: { url: 'http://127.0.0.1:4600' } });
-    await expect(elsewhere.newSession({ state: restored })).rejects.toMatchObject({ code: 'SESSION_MISMATCH' });
+    // The state itself names the app it was saved for; an imported one holds its digest alone.
+    await expect(elsewhere.newSession({ state })).rejects.toMatchObject({
+      code: 'SESSION_MISMATCH',
+      message: expect.stringMatching(/saved for http:\/\/\S+, and this host drives http:\/\/127\.0\.0\.1:4600.*app\.identity/),
+    });
+    await expect(elsewhere.newSession({ state: restored })).rejects.toMatchObject({ code: 'SESSION_MISMATCH', message: expect.stringContaining('saved for another app') });
   });
 
   it('carries every secret value a saved session knew, so a host launched without them still redacts what the app echoes', async () => {
@@ -221,6 +258,26 @@ describe('e2e/core', { timeout: 60_000 }, () => {
     expect(observes.length).toBeGreaterThan(0);
     for (const operation of observes) expect(operation.timeoutMs).toBeLessThanOrEqual(1_234);
     await session.close();
+  });
+
+  it('gives an app open the long default until a program sets a timeout, which then bounds it too', async () => {
+    const device = () => createFakeEngine({ device: true, links: true, scene: shop });
+    const app = { bundleId: 'com.example.shop', linkBase: 'shopapp://' };
+    const openTimeout = async (fake: ReturnType<typeof device>, session: { app: { open(path: string): Promise<void> } }) => {
+      const before = fake.operations.length;
+      await session.app.open('/cart');
+      return fake.operations.slice(before).find((operation) => operation.method === 'session.openLink')!.timeoutMs;
+    };
+    const plain = device();
+    const session = await (await host(plain.engine, { app })).newSession();
+    expect(await openTimeout(plain, session)).toBeGreaterThan(60_000);
+    session.setDefaultTimeout(1_234);
+    expect(await openTimeout(plain, session)).toBeLessThanOrEqual(1_234);
+    await session.close();
+    const bounded = device();
+    const launched = await (await host(bounded.engine, { app, timeout: 5_000 })).newSession();
+    expect(await openTimeout(bounded, launched)).toBeLessThanOrEqual(5_000);
+    await launched.close();
   });
 
   it('opens a path as a link in the pinned app on a device target with a link base', async () => {
@@ -303,6 +360,88 @@ describe('e2e/core', { timeout: 60_000 }, () => {
       expect(brain.calls).toBe(1);
     });
 
+    it('judges each action of a batched turn on the screen the one before it left', async () => {
+      // One button: the first tap turns "Continue" into "Pay now", the second pays.
+      const scene = (): ScriptedNode[] => {
+        const paid: ScriptedNode = { id: 'paid', role: 'status', name: 'Paid', states: { hidden: true } };
+        const button: ScriptedNode = {
+          id: 'next', role: 'button', name: 'Continue',
+          on: () => {
+            if (button.name === 'Pay now') paid.states = { hidden: false };
+            button.name = 'Pay now';
+          },
+        };
+        return [button, paid];
+      };
+      const hasty = {
+        name: 'hasty', version: '1',
+        async runStep(context: StepExecutorContext) {
+          const id = idOf((await context.observe()).text, 'button', 'Continue');
+          await context.actions.tap({ id });
+          await context.actions.tap({ id });
+          return { status: 'passed' as const, summary: 'paid' };
+        },
+      };
+      const opened = await host(createFakeEngine({ scene }).engine, { app: FAKE_APP });
+      const session = await opened.newSession();
+      await session.app.open('/');
+      const result = await createAgent(session, { executor: hasty, guard: { stop: [{ role: 'button', name: /pay/i }] } }).act('continue to payment');
+      expect(result).toMatchObject({ status: 'stopped', stoppedAt: { kind: 'tap', node: { role: 'button', name: 'Pay now' } } });
+      expect(await session.screen.getByRole('status', { name: 'Paid', visible: true }).count()).toBe(0);
+      await session.close();
+    });
+
+    it('stops typed text that holds a line break under a rule on Enter, whatever modifier a press holds', async () => {
+      const scene = (): ScriptedNode[] => [{ id: 'note', role: 'textbox', name: 'Note', value: '', states: { focused: true } }];
+      const typist = (send: (context: StepExecutorContext, id: string) => Promise<void>) => ({
+        name: 'typist', version: '1',
+        async runStep(context: StepExecutorContext) {
+          const id = idOf((await context.observe()).text, 'textbox', 'Note');
+          await context.actions.tap({ id });
+          await send(context, id);
+          return { status: 'passed' as const, summary: 'typed' };
+        },
+      });
+      const opened = await host(createFakeEngine({ scene, keyboard: true }).engine, { app: FAKE_APP });
+      const session = await opened.newSession();
+      await session.app.open('/');
+      const guard = { stop: [{ key: 'Enter' }] };
+      const typed = await createAgent(session, { executor: typist((context) => context.actions.typeText('thanks\n')), guard }).act('leave a note');
+      expect(typed).toMatchObject({ status: 'stopped', stoppedAt: { kind: 'typeText', key: 'Enter' } });
+      const pressed = await createAgent(session, { executor: typist((context, id) => context.actions.press({ id }, 'Shift+Enter')), guard }).act('leave a note');
+      expect(pressed).toMatchObject({ status: 'stopped', stoppedAt: { kind: 'press', key: 'Shift+Enter' } });
+      const plain = await createAgent(session, { executor: typist((context) => context.actions.typeText('thanks')), guard }).act('leave a note');
+      expect(plain.status).toBe('done');
+      await session.close();
+    });
+
+    it('asks check again when a stop it decided replays, and hands the step to the agent when it no longer stops', async () => {
+      const brain = scripted();
+      const cacheDir = path.join(dir, 'cache');
+      const opened = await host(createFakeEngine({ scene: shop }).engine, { app: FAKE_APP });
+      let limit = 30_000;
+      const results = [];
+      for (const round of [1, 2, 3]) {
+        const session = await opened.newSession();
+        await session.app.open('/');
+        const agent = createAgent(session, {
+          executor: brain,
+          cache: { dir: cacheDir },
+          guard: { check: (action) => (action.node?.name === 'Pay now' && limit < 39_000 ? 'stop' : 'allow') },
+        });
+        const result = await agent.act('checkout with the coupon', { cacheKey: 'checkout' });
+        results.push({ status: result.status, mode: result.cache?.mode, calls: brain.calls });
+        await session.screen.getByRole('button', 'Pay now').waitFor();
+        await session.close();
+        if (round === 2) limit = 50_000;
+      }
+      expect(results).toEqual([
+        { status: 'stopped', mode: 'missed', calls: 1 },
+        { status: 'stopped', mode: 'self-finalized', calls: 1 },
+        { status: 'done', mode: 'agent-concluded', calls: 2 },
+      ]);
+    });
+
     it('refuses a denied action as POLICY_DENIED, which the agent reads and works around', async () => {
       const brain = scripted();
       const opened = await host(createFakeEngine({ scene: shop }).engine, { app: FAKE_APP });
@@ -350,6 +489,55 @@ describe('e2e/core', { timeout: 60_000 }, () => {
       expect(readdirSync(cacheDir, { recursive: true }).filter((file) => String(file).endsWith('.json'))).toHaveLength(1);
     });
 
+    it('drops only what a caught agent failure found unconfirmed, and evicts nothing when a session closes before its check', async () => {
+      const brain = scripted();
+      const flaky: StepExecutor = {
+        name: 'scripted', version: '1',
+        runStep: async (context) => context.step.instruction.startsWith('find')
+          ? { status: 'failed' as const, summary: 'there is no sale' }
+          : brain.runStep(context),
+      };
+      const cacheDir = path.join(dir, 'cache');
+      const recordings = () => readdirSync(cacheDir, { recursive: true }).filter((file) => String(file).endsWith('.json'));
+      const opened = await host(createFakeEngine({ scene: shop }).engine, { app: FAKE_APP });
+      const round = async (steps: (agent: ReturnType<typeof agentOn>, session: Awaited<ReturnType<typeof opened.newSession>>) => Promise<void>) => {
+        const session = await opened.newSession();
+        await session.app.open('/');
+        await steps(agentOn(session), session);
+        await session.close();
+      };
+      const agentOn = (session: Session) => createAgent(session, { executor: flaky, guard: { stop: [{ name: 'Pay now' }] }, cache: { dir: cacheDir } });
+      const fails = (agent: ReturnType<typeof agentOn>) => expect(agent.act('find the sale', { cacheKey: 'sale' })).rejects.toMatchObject({ code: 'ACTION_FAILED' });
+
+      // A recording made after a failure the program caught is confirmed by the check after it.
+      await round(async (agent, session) => {
+        await fails(agent);
+        expect((await agent.act('checkout with the coupon', { cacheKey: 'checkout' })).cache?.mode).toBe('missed');
+        await session.screen.getByRole('button', 'Pay now').waitFor();
+      });
+      expect(recordings()).toHaveLength(1);
+      // A session that closes between a replay and its check leaves the recording alone.
+      await round(async (agent) => {
+        expect((await agent.act('checkout with the coupon', { cacheKey: 'checkout' })).cache?.mode).toBe('self-finalized');
+      });
+      expect(recordings()).toHaveLength(1);
+      // So does a replay that a check confirms after a failure.
+      await round(async (agent, session) => {
+        await fails(agent);
+        expect((await agent.act('checkout with the coupon', { cacheKey: 'checkout' })).cache?.mode).toBe('self-finalized');
+        await session.screen.getByRole('button', 'Pay now').waitFor();
+      });
+      expect(recordings()).toHaveLength(1);
+      // A recording still unconfirmed when a step fails is dropped, whatever passes later.
+      await round(async (agent, session) => {
+        expect((await agent.act('checkout with the coupon', { cacheKey: 'again' })).cache?.mode).toBe('missed');
+        await fails(agent);
+        await session.screen.getByRole('button', 'Pay now').waitFor();
+      });
+      expect(recordings()).toHaveLength(1);
+      expect(brain.calls).toBe(2);
+    });
+
     it('requires a cacheKey on an agent with a cache, refuses one without, and fails a call with no model as MODEL_UNAVAILABLE', async () => {
       const opened = await host(createFakeEngine({ scene: shop }).engine, { app: FAKE_APP });
       const session = await opened.newSession();
@@ -359,8 +547,11 @@ describe('e2e/core', { timeout: 60_000 }, () => {
       const live = createAgent(session, { executor: scripted() });
       // @ts-expect-error -- cacheKey needs an agent with a cache
       await expect(live.act('checkout', { cacheKey: 'checkout' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
-      await expect(createAgent(session, {}).act('anything')).rejects.toMatchObject({ code: 'MODEL_UNAVAILABLE' });
-      expect(() => createAgent({}, {})).toThrow(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+      await expect(createAgent(session, {}).act('anything')).rejects.toMatchObject({ code: 'MODEL_UNAVAILABLE', message: expect.stringContaining('pass one to createAgent') });
+      // Options held in a variable hide the cache from the compiler: act takes either form, and the runtime refuses the wrong one.
+      const held: Parameters<typeof createAgent>[1] = { executor: scripted(), cache: { dir: path.join(dir, 'cache') } };
+      await expect(createAgent(session, held).act('checkout')).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+      expect(() => createAgent({} as never, {})).toThrow(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
       expect(() => createAgent(session, { guard: { stop: [{ nme: 'Pay' } as never] } })).toThrow(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
       await session.close();
     });

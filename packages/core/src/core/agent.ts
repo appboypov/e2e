@@ -13,15 +13,29 @@ import { createAgentCacheContext, settleStagedTraces, type AgentCacheContext } f
 import { storedRecordingsFor } from '../cache/rekeyed.ts';
 import { resolveAgentConfig } from '../config/agent.ts';
 import type { ResolvedCacheConfig } from '../config/resolve.ts';
+import { AgentError } from '../agent/error.ts';
 import { TestError } from '../internal/errors.ts';
+import { rejectUnknownKeys } from '../internal/options.ts';
 import { lazily, lazyBuiltInAgent } from '../run/fixtures.ts';
 import { targetIdentity } from '../run/sessions.ts';
 import { WorkerModels } from '../run/worker-models.ts';
 import type { ActOptions, ActResult, Agent, AgentConfig, CacheStore, Guard } from '../types.ts';
 import { sessionInternals } from './internals.ts';
+import type { Session } from './launch.ts';
 import path from 'node:path';
 
-export type { ActOptions, ActOutcome, ActResult, AssertOptions, ExtractOptions, Guard, GuardDecision, GuardNode, GuardRule, ProposedAction, WaitForOptions } from '../types.ts';
+export type {
+  ActionEvent, ActionHook, ActionName, ActOptions, ActOutcome, ActResult, Agent, AgentConfig, AgentErrorCode, AgentTool, AssertOptions,
+  BeforeActionEvent, BeforeActionHook, CacheReadResult, CacheStore, ExtractOptions, Guard, GuardDecision, GuardedActionName, GuardNode,
+  GuardRule, ModelInstance, ProposedAction, ProviderOptions, VisionMode, WaitForOptions,
+} from '../types.ts';
+// What a custom executor is written against, as the `e2e` entry has it.
+export type {
+  ExecutorActions, ExecutorAttempt, ExecutorBudgets, ExecutorModelCall, ExecutorNode, ExecutorObservation, ExecutorObserveOptions,
+  ExecutorPixels, ExecutorReadOptions, ExecutorReadResult, ExecutorStep, ExecutorTarget, ExecutorVerb, PointDragResult, PointHit,
+  PointTapResult, ReplayedPrefix, ReplayHandOffReason, StepExecutor, StepExecutorContext, StepVerdict, StepVerdictStatus,
+} from '../agent/executor.ts';
+export type { StepCacheInfo } from '../run/steps.ts';
 // The project tools and executor seam an agent is built from, as `e2e/agent` has them.
 export * from '../agent/public.ts';
 
@@ -77,13 +91,31 @@ export interface CoreAgent extends Omit<Agent, 'act'> {
   act(instruction: string, options?: Omit<ActOptions, 'agent'>): Promise<ActResult>;
 }
 
+/**
+ * An agent created from options the compiler could not read a `cache` off,
+ * such as a variable typed `CreateAgentOptions`: `act` takes either form, and
+ * the runtime refuses the one that does not fit the agent.
+ */
+export interface UncheckedAgent extends Omit<Agent, 'act'> {
+  act(instruction: string, options?: CachingActOptions | Omit<ActOptions, 'agent'>): Promise<ActResult>;
+}
+
 const AGENT_NAME = 'agent';
+/**
+ * What stands in a recording's key where a run puts its project. A run reads
+ * it off `package.json`, or hashes the directory when there is none; a
+ * program's recordings must be found from any directory and on any machine,
+ * so a shared store works, and the `cacheKey` already names the flow.
+ */
+const CACHE_PROJECT_ID = '@e2e-dev/core';
 
 /** Creates an agent over `session` whose `act` replays flows from `cache`, each named by its `cacheKey`. */
-export function createAgent(session: object, options: CreateAgentOptions & { readonly cache: AgentCacheOptions }): CachingAgent;
+export function createAgent(session: Session, options: CreateAgentOptions & { readonly cache: AgentCacheOptions }): CachingAgent;
 /** Creates an agent over `session`. */
-export function createAgent(session: object, options: CreateAgentOptions): CoreAgent;
-export function createAgent(session: object, options: CreateAgentOptions): CachingAgent | CoreAgent {
+export function createAgent(session: Session, options: CreateAgentOptions & { readonly cache?: undefined }): CoreAgent;
+/** Creates an agent over `session` from options held in a variable; see `UncheckedAgent`. */
+export function createAgent(session: Session, options: CreateAgentOptions): UncheckedAgent;
+export function createAgent(session: Session, options: CreateAgentOptions): CachingAgent | CoreAgent | UncheckedAgent {
   const internals = sessionInternals(session, 'createAgent');
   if (typeof options !== 'object' || options === null) throw new TestError('INVALID_ARGUMENT', 'createAgent options must be an object with a model');
   const { guard, cache, ...entry } = options;
@@ -106,6 +138,9 @@ export function createAgent(session: object, options: CreateAgentOptions): Cachi
     ...attempt.agentRuntime,
     select: (requested) => {
       if (requested !== undefined) throw new TestError('INVALID_ARGUMENT', 'an @e2e-dev/core agent takes no agent option: create another agent for another configuration');
+      if (resolved.model === undefined && resolved.executor === undefined) {
+        throw new AgentError('MODEL_UNAVAILABLE', "the agent has no model: pass one to createAgent, an AI SDK model instance such as createAgent(session, { model: gateway('openai/gpt-6-luna-fast') })");
+      }
       models.preflight(resolved, AGENT_NAME);
       return selection;
     },
@@ -121,7 +156,7 @@ export function createAgent(session: object, options: CreateAgentOptions): Cachi
     let context = caches.get(cacheKey);
     if (context === undefined) {
       context = createAgentCacheContext({
-        cache: cacheConfig, projectRoot: config.projectRoot, projectId: config.projectId,
+        cache: cacheConfig, projectRoot: config.projectRoot, projectId: CACHE_PROJECT_ID,
         testId: `core:${cacheKey}`, target: targetIdentity(target), attemptIndex: 0,
         recordings: storedRecordingsFor(cacheConfig),
       });
@@ -157,15 +192,13 @@ export function createAgent(session: object, options: CreateAgentOptions): Cachi
     assert: (assertion, assertOptions) => live.assert(assertion, assertOptions),
     waitFor: (condition, waitOptions) => live.waitFor(condition, waitOptions),
     extract: (instruction, extractOptions) => live.extract(instruction, extractOptions),
-  } as CachingAgent | CoreAgent;
+  };
 }
 
 /** The cache options as the replay cache reads them: the file store under the project root unless a store replaces it. */
 function resolveAgentCache(cache: AgentCacheOptions, projectRoot: string): ResolvedCacheConfig {
   if (typeof cache !== 'object' || cache === null) throw new TestError('INVALID_ARGUMENT', 'createAgent cache must be an object such as { dir: ".e2e/cache" }');
-  for (const key of Object.keys(cache)) {
-    if (!['dir', 'mode', 'store', 'strict'].includes(key)) throw new TestError('INVALID_ARGUMENT', `createAgent cache has an unknown key "${key}"; expected dir, mode, store, or strict`);
-  }
+  rejectUnknownKeys('createAgent cache', cache, ['dir', 'mode', 'store', 'strict'], 'INVALID_ARGUMENT');
   const mode = cache.mode ?? 'read-write';
   if (mode !== 'read-write' && mode !== 'read-only') throw new TestError('INVALID_ARGUMENT', 'createAgent cache.mode must be "read-write" or "read-only"');
   if (cache.dir !== undefined && (typeof cache.dir !== 'string' || cache.dir.trim() === '')) throw new TestError('INVALID_ARGUMENT', 'createAgent cache.dir must be a non-empty path');

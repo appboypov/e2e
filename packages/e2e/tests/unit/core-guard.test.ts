@@ -1,10 +1,16 @@
 /** The `@e2e-dev/core` agent's guard: rules, decisions, and the stop a recorded trace keeps. */
 import { describe, expect, it } from 'vitest';
-import { compileGuard, describeProposed } from '@e2e-dev/core/lib/agent/guard';
+import { compileGuard as compile, describeProposed } from '@e2e-dev/core/lib/agent/guard';
 import type { RedactedNode } from '@e2e-dev/core/lib/agent/observation';
 import { readTraceEntry } from '@e2e-dev/core/lib/cache/trace-read';
 import { TRACE_SCHEMA_VERSION } from '@e2e-dev/core/lib/cache/trace';
 import type { ProposedAction } from '@e2e-dev/core/lib/types';
+
+/** A compiled guard whose `decide` answers with the decision alone. */
+function compileGuard(...args: Parameters<typeof compile>) {
+  const guard = compile(...args);
+  return { ...guard, decide: async (...asked: Parameters<typeof guard.decide>) => (await guard.decide(...asked)).decision };
+}
 
 const node = (role: string, name: string, extra: Partial<RedactedNode> = {}): RedactedNode =>
   ({ ref: { id: 'n1', revision: 'r1' }, role, name, ...extra }) as unknown as RedactedNode;
@@ -48,6 +54,33 @@ describe('compileGuard', () => {
     expect(await destinations.decide({ kind: 'tap' }, true, {})).toBe('allow');
   });
 
+  it('matches a key under any modifier unless the rule names modifiers, and reads typed line breaks as Enter', async () => {
+    const enter = compileGuard({ stop: [{ key: 'Enter' }] });
+    for (const key of ['Enter', 'Shift+Enter', 'Control+Enter']) expect(await enter.decide({ kind: 'press', key }, true, {}), key).toBe('stop');
+    expect(await enter.decide({ kind: 'typeText', key: 'Enter' }, true, {})).toBe('stop');
+    expect(await enter.decide({ kind: 'pressKey', key: 'Tab' }, true, {})).toBe('allow');
+    expect(await enter.decide({ kind: 'typeText' }, true, {})).toBe('allow');
+    const save = compileGuard({ deny: [{ key: 'Control+s' }] });
+    expect(await save.decide({ kind: 'pressKey', key: 'Control+S' }, true, {})).toBe('deny');
+    expect(await save.decide({ kind: 'pressKey', key: 's' }, true, {})).toBe('allow');
+    expect(await save.decide({ kind: 'pressKey', key: 'Control+Shift+s' }, true, {})).toBe('allow');
+  });
+
+  it('says whether check decided, and asks it again about a recorded stop', async () => {
+    let answer: 'stop' | 'allow' = 'stop';
+    const guard = compile({ stop: [{ name: 'Pay now' }], check: () => answer });
+    expect(await guard.decide(...tap(node('button', 'Pay now')))).toEqual({ decision: 'stop', byCheck: false });
+    expect(await guard.decide(...tap(node('button', 'Use points')))).toEqual({ decision: 'stop', byCheck: true });
+    const recorded: ProposedAction = { kind: 'tap', node: { role: 'button', name: 'Use points' } };
+    expect(await guard.stillStops(recorded)).toBe(true);
+    answer = 'allow';
+    expect(await guard.stillStops(recorded)).toBe(false);
+    expect(await compile({ stop: [{ name: 'Pay now' }] }).stillStops(recorded)).toBe(false);
+    expect(compile({}).guarding).toBe(false);
+    expect(compile({ unidentified: 'deny' }).guarding).toBe(false);
+    expect(guard.guarding).toBe(true);
+  });
+
   it('denies an action it cannot identify while any rule is set, unless told to allow it', async () => {
     const point: ProposedAction = { kind: 'tapAt' };
     expect(await compileGuard({ stop: [{ name: 'Pay' }] }).decide(point, false, {})).toBe('deny');
@@ -76,6 +109,11 @@ describe('compileGuard', () => {
     expect(() => compileGuard({ stop: [{ nme: 'Pay' } as never] })).toThrow(/unknown key "nme"/);
     expect(() => compileGuard({ unidentified: 'maybe' as never })).toThrow(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
     expect(() => compileGuard({ halt: [] } as never)).toThrow(/unknown key "halt"/);
+    // A misspelled key or action would match nothing, so the guard would allow what it was written to keep.
+    expect(() => compileGuard({ stop: [{ key: 'enter' }] })).toThrow(/is not a key/);
+    expect(() => compileGuard({ stop: [{ key: 'Return' }] })).toThrow(expect.objectContaining({ code: 'INVALID_ARGUMENT' }));
+    expect(() => compileGuard({ deny: [{ actions: ['click' as never] }] })).toThrow(/names "click", which is no action/);
+    expect(() => compileGuard({ deny: [{ actions: ['tap', 'tool:refund'] }] })).not.toThrow();
   });
 
   it('describes an action by its kind, node, and key', () => {
@@ -104,6 +142,15 @@ describe('a recorded stop', () => {
     expect(readTraceEntry(entry(navigate))?.payload.stop).toEqual(navigate);
     // A space press stores the key as written, whitespace and all.
     expect(readTraceEntry(entry({ kind: 'pressKey', key: ' ' }))?.payload.stop).toEqual({ kind: 'pressKey', key: ' ' });
+  });
+
+  it('keeps what decided the stop when check did', () => {
+    const stop = { kind: 'tap', node: { role: 'button', name: 'Use points' } };
+    const read = (extra: object) => readTraceEntry({ ...entry(stop), payload: { ...entry(stop).payload, ...extra } });
+    expect(read({ stopBy: 'check' })?.payload.stopBy).toBe('check');
+    expect(read({})?.payload.stopBy).toBeUndefined();
+    expect(read({ stopBy: 'rule' })).toBeUndefined();
+    expect(readTraceEntry({ ...entry(undefined), payload: { ...entry(undefined).payload, stopBy: 'check' } })).toBeUndefined();
   });
 
   it('distrusts a whole entry whose stop is malformed', () => {

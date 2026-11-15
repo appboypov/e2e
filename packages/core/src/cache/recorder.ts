@@ -126,6 +126,8 @@ export class TraceRecorder {
     readonly keyedBy?: TraceKeyContext;
     /** The action a guard stopped the step before; see `ActionTrace.stop`. */
     readonly stop?: ProposedAction;
+    /** True when the guard's `check` decided that stop; see `ActionTrace.stopBy`. */
+    readonly stopByCheck?: boolean;
   }): ActionTrace | undefined {
     if (this.actions.length === 0) return undefined;
     const source = conclusion.recordedBy;
@@ -161,7 +163,7 @@ export class TraceRecorder {
         : { endWaitMs: Math.min(MAX_TRACE_END_WAIT_MS, Math.max(0, Math.round(conclusion.endWaitMs))) }),
       ...(conclusion.keyedBy === undefined ? {} : { keyedBy: conclusion.keyedBy }),
       ...(this.truncated ? { truncated: true } : {}),
-      ...(stop === undefined ? {} : { stop }),
+      ...(stop === undefined ? {} : { stop, ...(conclusion.stopByCheck === true ? { stopBy: 'check' as const } : {}) }),
     };
   }
 
