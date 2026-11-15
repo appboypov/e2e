@@ -1,6 +1,6 @@
 {
   "name": "@e2e-dev/core",
-  "version": "0.0.0",
+  "version": "0.23.2",
   "description": "The engine contract, locators, agent, and replay cache the e2e test runner is built on",
   "keywords": [
     "e2e",

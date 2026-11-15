@@ -1,5 +1,28 @@
 # e2e
 
+## 0.23.2
+
+### Patch Changes
+
+- [#1785](https://github.com/e2e-inc/e2e/pull/1785) [`ceaea64`](https://github.com/e2e-inc/e2e/commit/ceaea64ceead09d0a0f8cb5b384ef0d9ffac23a1) Thanks [@okwasniewski](https://github.com/okwasniewski)! - Bump playwright-core to 1.65.1 and `@ai-sdk/provider` to 4.0.38. Smol sandboxes use the Playwright 1.65.1 image.
+
+- [#1633](https://github.com/e2e-inc/e2e/pull/1633) [`0b44859`](https://github.com/e2e-inc/e2e/commit/0b4485989d3b6aad0188c66e5f34a465894afb51) Thanks [@leszko11](https://github.com/leszko11)! - Read a listed node's computed style from a read-only project tool with
+  `getToolContext(options).read({ id }, { style: ['color', 'font-weight'] })`.
+  The web engine returns allow-listed CSS values, secret-redacted, under the
+  step's deadline. Engines can implement the optional `readStyle` method over the
+  engine protocol for the `computed-style` capability; a read on an engine
+  without it fails with `POLICY_DENIED`.
+
+- [#1737](https://github.com/e2e-inc/e2e/pull/1737) [`0a5ee16`](https://github.com/e2e-inc/e2e/commit/0a5ee16387cf213df547a8422b7d690675744986) Thanks [@kdy1](https://github.com/kdy1)! - New package `@e2e-dev/core`: the engine contract, locators, agent, replay cache, and engine sessions that `e2e` is built on. `e2e` depends on it at the same version, and `e2e/engine` and `e2e/agent` re-export it unchanged. `@e2e-dev/web` and `@e2e-dev/mobile` peer on `@e2e-dev/core` beside `e2e`, and import the contract from `@e2e-dev/core/engine`, which a third-party engine can now import too. npm, pnpm and Bun install the new peer themselves. A Yarn project lists `@e2e-dev/core` beside the engine; `e2e init` and `e2e upgrade` add it.
+
+- [#1799](https://github.com/e2e-inc/e2e/pull/1799) [`cfa2aa0`](https://github.com/e2e-inc/e2e/commit/cfa2aa0ecc77751fe56e4fbb8c938677cfa7ec01) Thanks [@samanyudas](https://github.com/samanyudas)! - Workers no longer die about 1 ms after a stop request when a grace budget built from `timeout` and `cleanupTimeout` is longer than 2^31-1 milliseconds. Ctrl-C now runs `afterEach` and disposes the engine with `timeout` near that limit, and engine disposal at the end of a run or on a second Ctrl-C finishes with `cleanupTimeout` near it.
+
+- [#1736](https://github.com/e2e-inc/e2e/pull/1736) [`9949c8a`](https://github.com/e2e-inc/e2e/commit/9949c8aba23f3a3e09eb46d4184157fd3838d1a6) Thanks [@kdy1](https://github.com/kdy1)! - `e2e` exports `ProjectConfig`, the part of `E2EConfig` without `reporters` and `filters`.
+
+- [#1750](https://github.com/e2e-inc/e2e/pull/1750) [`2359860`](https://github.com/e2e-inc/e2e/commit/23598607832ca5989f8d9758313a4084eb98fdb3) Thanks [@KrzysztofMoch](https://github.com/KrzysztofMoch)! - `e2e run --step` works without a terminal, as in a coding agent's shell. The run goes on in the background and the command returns at the first held step, with the screen that step waits on. `e2e run --step next` runs the held step, prints how it ended, and returns at the next one; `e2e run --step rest` runs the rest, and `e2e run --step stop` ends the run. The last answer says the run has ended.
+- Updated dependencies [[`0a5ee16`](https://github.com/e2e-inc/e2e/commit/0a5ee16387cf213df547a8422b7d690675744986)]:
+  - @e2e-dev/core@0.23.2
+
 ## 0.23.1
 
 ### Patch Changes

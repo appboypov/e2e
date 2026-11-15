@@ -1,5 +1,20 @@
 # @e2e-dev/web
 
+## 0.16.1
+
+### Patch Changes
+
+- [#1785](https://github.com/e2e-inc/e2e/pull/1785) [`ceaea64`](https://github.com/e2e-inc/e2e/commit/ceaea64ceead09d0a0f8cb5b384ef0d9ffac23a1) Thanks [@okwasniewski](https://github.com/okwasniewski)! - Bump playwright-core to 1.65.1 and `@ai-sdk/provider` to 4.0.38. Smol sandboxes use the Playwright 1.65.1 image.
+
+- [#1633](https://github.com/e2e-inc/e2e/pull/1633) [`0b44859`](https://github.com/e2e-inc/e2e/commit/0b4485989d3b6aad0188c66e5f34a465894afb51) Thanks [@leszko11](https://github.com/leszko11)! - Read a listed node's computed style from a read-only project tool with
+  `getToolContext(options).read({ id }, { style: ['color', 'font-weight'] })`.
+  The web engine returns allow-listed CSS values, secret-redacted, under the
+  step's deadline. Engines can implement the optional `readStyle` method over the
+  engine protocol for the `computed-style` capability; a read on an engine
+  without it fails with `POLICY_DENIED`.
+
+- [#1737](https://github.com/e2e-inc/e2e/pull/1737) [`0a5ee16`](https://github.com/e2e-inc/e2e/commit/0a5ee16387cf213df547a8422b7d690675744986) Thanks [@kdy1](https://github.com/kdy1)! - New package `@e2e-dev/core`: the engine contract, locators, agent, replay cache, and engine sessions that `e2e` is built on. `e2e` depends on it at the same version, and `e2e/engine` and `e2e/agent` re-export it unchanged. `@e2e-dev/web` and `@e2e-dev/mobile` peer on `@e2e-dev/core` beside `e2e`, and import the contract from `@e2e-dev/core/engine`, which a third-party engine can now import too. npm, pnpm and Bun install the new peer themselves. A Yarn project lists `@e2e-dev/core` beside the engine; `e2e init` and `e2e upgrade` add it.
+
 ## 0.16.0
 
 ### Minor Changes

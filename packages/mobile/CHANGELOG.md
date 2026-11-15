@@ -1,5 +1,17 @@
 # @e2e-dev/mobile
 
+## 0.12.8
+
+### Patch Changes
+
+- [#1737](https://github.com/e2e-inc/e2e/pull/1737) [`0a5ee16`](https://github.com/e2e-inc/e2e/commit/0a5ee16387cf213df547a8422b7d690675744986) Thanks [@kdy1](https://github.com/kdy1)! - New package `@e2e-dev/core`: the engine contract, locators, agent, replay cache, and engine sessions that `e2e` is built on. `e2e` depends on it at the same version, and `e2e/engine` and `e2e/agent` re-export it unchanged. `@e2e-dev/web` and `@e2e-dev/mobile` peer on `@e2e-dev/core` beside `e2e`, and import the contract from `@e2e-dev/core/engine`, which a third-party engine can now import too. npm, pnpm and Bun install the new peer themselves. A Yarn project lists `@e2e-dev/core` beside the engine; `e2e init` and `e2e upgrade` add it.
+
+- [#1787](https://github.com/e2e-inc/e2e/pull/1787) [`74435e2`](https://github.com/e2e-inc/e2e/commit/74435e23b68a103ce21f25947c3b7a8a4015cb2a) Thanks [@karolkulesza](https://github.com/karolkulesza)! - The step label for `device.openLink` drops a link's userinfo, query, and fragment, and shows `<link>` for a string that does not parse as a URL. `device.openApp` labels an app id as it is, or `<link>` when it is shaped like a link.
+
+- [#1784](https://github.com/e2e-inc/e2e/pull/1784) [`dd39974`](https://github.com/e2e-inc/e2e/commit/dd39974acedee5b68042dd219f99249f781dfaf0) Thanks [@karolkulesza](https://github.com/karolkulesza)! - `mobile()` now refuses a `snapshot` value other than `'full'` or `'interactive'` and a `videoTouches` value that is not a boolean, instead of quietly using the default.
+
+- [#1728](https://github.com/e2e-inc/e2e/pull/1728) [`e167149`](https://github.com/e2e-inc/e2e/commit/e167149af1d390492af09e5fe28bb64072e9df64) Thanks [@karolkulesza](https://github.com/karolkulesza)! - The `device` option's documentation now says a paired iPhone or iPad that is reachable counts as booted, and that a shut-down device boots in tiers: on iOS an iPhone, then an iPad, then an Apple TV; on Android a phone or tablet, then a TV.
+
 ## 0.12.7
 
 ### Patch Changes
