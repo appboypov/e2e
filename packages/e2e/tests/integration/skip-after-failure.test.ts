@@ -145,7 +145,7 @@ describe('a runtime skip after a failure', () => {
     expect(output).not.toContain('Skipped After Failure');
   });
 
-  it('exits 3 when a skipped test cleanup fails, keeping the test skipped', () => {
+  it('exits 0 when a skipped test cleanup fails, keeping the test skipped and the fault a warning', () => {
     const { report, output, exitCode } = runSkipped(
       `test('clean skip', () => { test.skip('not applicable'); });`,
       'failOnSkippedFailure: true,',
@@ -154,8 +154,21 @@ describe('a runtime skip after a failure', () => {
     );
     expect(report.run.results[0]?.attempts[0]?.secondaryErrors).toMatchObject([{ phase: 'cleanup' }]);
     expect(report.run.results[0]?.status).toBe('skipped');
-    expect(exitCode).toBe(3);
+    expect(exitCode).toBe(0);
+    expect(report.run.status).toBe('passed');
     expect(output).not.toContain('Skipped After Failure');
+  });
+
+  it('exits 1 when a test fails and its cleanup fails too: the cleanup fault adds no code', () => {
+    const { report, exitCode } = runSkipped(
+      `test('fails', () => { expect(1).toBe(2); });`,
+      '',
+      0,
+      `async endAttempt() { throw new Error('cleanup failed'); },`,
+    );
+    expect(report.run.results[0]?.status).toBe('failed');
+    expect(report.run.results[0]?.attempts[0]?.secondaryErrors).toMatchObject([{ phase: 'cleanup' }]);
+    expect(exitCode).toBe(1);
   });
 });
 

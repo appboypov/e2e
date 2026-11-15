@@ -377,10 +377,11 @@ describe('engine targets', () => {
     }
   });
 
-  it('abandons a finish hook that outlives the cleanup budget as a cleanup error instead of hanging the run', async () => {
+  it('abandons a finish hook that outlives the cleanup budget as a cleanup warning and keeps the run passed', async () => {
     const toy = toyEngine({ withLocate: true, withPrepare: 'hang-finish' });
     const project = createProject({ 'tests/screen.e2e.ts': DETERMINISTIC_SUITE });
     const errors: { code: string; phase: string | undefined }[] = [];
+    const warnings: { code: string; phase: string | undefined }[] = [];
     try {
       const outcome = await run({
         cwd: project.dir,
@@ -392,13 +393,19 @@ describe('engine targets', () => {
         env: { ...process.env, APP_URL: '', CI: '' },
         quiet: true,
         onEvent: (event) => {
+          if (event.type === 'run-warning') warnings.push({ code: event.error.code, phase: event.error.phase });
           if (event.type === 'run-error') errors.push({ code: event.error.code, phase: event.error.phase });
         },
       });
-      // The tests ran and passed; only the teardown is in error, and the run still reported.
+      // The tests ran and passed; only the teardown faulted, and that is a warning.
       expect(outcome.results.map((result) => result.status)).toEqual(['passed']);
       expect(toy.lifecycle).toEqual(['prepare', 'init', 'dispose', 'finish']);
-      expect(errors).toEqual([{ code: 'CLEANUP_TIMEOUT', phase: 'cleanup' }]);
+      expect(warnings).toEqual([{ code: 'CLEANUP_TIMEOUT', phase: 'cleanup' }]);
+      expect(errors).toEqual([]);
+      expect(outcome.exitCode).toBe(0);
+      expect(outcome.status).toBe('passed');
+      expect(outcome.report.run.errors).toEqual([]);
+      expect(outcome.report.run.warnings).toMatchObject([{ code: 'CLEANUP_TIMEOUT', phase: 'cleanup' }]);
     } finally {
       project.cleanup();
     }

@@ -34,7 +34,7 @@ The exit code tells the type of failure:
 | ---: | --- | --- |
 | 1 | A test failed | Only if the test is flaky |
 | 2 | Configuration, collection, or policy | Fix the reported problem first |
-| 3 | Engine, app process, model provider, artifact, or cleanup infrastructure failure | If the cause is temporary |
+| 3 | Engine, app process, model provider, or artifact infrastructure failure | If the cause is temporary |
 | 4 | An internal runner error | Report it |
 | 130 | The run was interrupted | |
 
@@ -162,12 +162,13 @@ every result of the run in a versioned schema. `--reporter json` prints it to
 stdout:
 
 ```bash
-jq '.run | {status, exitCode, errors}' .e2e/report.json
+jq '.run | {status, exitCode, errors, warnings}' .e2e/report.json
 jq '.run.results[] | select(.status != "passed") | .attempts[-1]
     | {status, error, failure, steps: [.steps[] | select(.status != "passed") | {api, label, source, status, error}], artifacts}' .e2e/report.json
 ```
 
-`run.errors` holds run-level failures. The last attempt of each failed
+`run.errors` holds run-level failures and `run.warnings` the cleanup faults
+that leave the exit code as the tests set it. The last attempt of each failed
 result holds:
 
 | Field | Holds |

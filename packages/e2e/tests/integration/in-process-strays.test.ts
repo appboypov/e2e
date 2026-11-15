@@ -30,6 +30,7 @@ console.log(JSON.stringify({
   results: Object.fromEntries(outcome.results.map((r) => [r.test.title, [r.status, r.attempts[0]?.error?.code ?? r.skip?.cause, r.attempts[0]?.error?.message]])),
   exitCode: outcome.exitCode,
   runErrors: outcome.report.run.errors.map((e) => [e.code, e.message]),
+  runWarnings: outcome.report.run.warnings.map((e) => [e.code, e.message]),
   listeners: { before, after: listeners() },
 }));
 `;
@@ -50,6 +51,7 @@ function runInHost(tests: Readonly<Record<string, string>>, engineMembers = '') 
     results: Record<string, [string, string | null, string | null]>;
     exitCode: number;
     runErrors: [string, string][];
+    runWarnings: [string, string][];
     listeners: { before: number[]; after: number[] };
   };
 }
@@ -136,10 +138,8 @@ test('throws off the stack', async () => {
       },
       `dispose: () => { throw new Error('dispose-failed'); },`,
     );
-    expect(outcome.runErrors).toEqual([
-      ['ERROR', 'boom-uncaught'],
-      ['ENGINE_FAILURE', expect.stringContaining('dispose-failed')],
-    ]);
+    expect(outcome.runErrors).toEqual([['ERROR', 'boom-uncaught']]);
+    expect(outcome.runWarnings).toEqual([['ENGINE_FAILURE', expect.stringContaining('dispose-failed')]]);
   });
 
   it('ends the worker on a rejection before any test has finished in it', () => {

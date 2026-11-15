@@ -215,6 +215,15 @@ export type RunEventFact =
   | { readonly type: 'run-error'; readonly error: SerializedError }
   | {
       /**
+       * A fault of the run in its cleanup phase, such as an engine that does
+       * not dispose in time. It leaves the verdict and the exit code as the
+       * tests set them; the report keeps it in `run.warnings`.
+       */
+      readonly type: 'run-warning';
+      readonly error: SerializedError;
+    }
+  | {
+      /**
        * An interrupt landed. `graceful`: the running test is interrupted and
        * its teardown runs. `forced` (a second interrupt): every worker tears
        * its engine down at once and is killed after the cleanup budget.

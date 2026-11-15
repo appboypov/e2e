@@ -94,6 +94,7 @@ function build(overrides: Partial<BuildReportOptions>): ReturnType<typeof buildR
     results: [],
     serialGroups: [],
     runErrors: [],
+    runWarnings: [],
     targetProvenance: new Map(),
     ...overrides,
   });

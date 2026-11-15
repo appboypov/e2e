@@ -338,6 +338,8 @@ export class ListReporter implements Reporter {
   private readonly pendingSerial = new Map<string, { group: SerialGroupRecord; remaining: number }>();
   /** Run-level errors, printed once at the end; the stream carries them as they happen. */
   private readonly errors: SerializedError[] = [];
+  /** Run-level cleanup faults, printed once at the end as warnings; they leave the verdict as it is. */
+  private readonly warnings: SerializedError[] = [];
   /**
    * Whether the run was cut short. An interrupt during service or app startup
    * lands before discovery, so the counters stay at zero; the summary must not
@@ -442,6 +444,9 @@ export class ListReporter implements Reporter {
         break;
       case 'run-error':
         this.errors.push(event.error);
+        break;
+      case 'run-warning':
+        this.warnings.push(event.error);
         break;
       case 'run-interrupted':
         this.runInterrupted(event);
@@ -1202,6 +1207,14 @@ export class ListReporter implements Reporter {
     return `${pc.red(before)}${label}${pc.red(after)}`;
   }
 
+  /** A full-width yellow rule with a centered label, for what leaves the verdict as it is. */
+  private warningBanner(message: string): string {
+    const { pc } = this;
+    const label = pc.bold(pc.bgYellow(` ${message} `));
+    const { before, after } = rule(label, 'center');
+    return `${pc.yellow(before)}${label}${pc.yellow(after)}`;
+  }
+
   /**
    * What the runner saw when the failure landed: the location, the nodes
    * closest to what a failed locator asked for, what the app logged as an
@@ -1282,6 +1295,23 @@ export class ListReporter implements Reporter {
     }
   }
 
+  /** Run-level cleanup faults: printed in yellow, since the tests' verdict and the exit code stand. */
+  private printWarnings(): void {
+    const { pc } = this;
+    if (this.warnings.length === 0) return;
+    this.print('');
+    this.print(this.warningBanner(`Warnings ${this.warnings.length}`));
+    this.print('');
+    for (const warning of this.warnings) {
+      const phase = warning.phase === undefined ? '' : pc.dim(` (${bounded(warning.phase)})`);
+      this.print(
+        `${pc.bold(pc.bgYellow(' WARN '))} ${bounded(warning.category)} warning ${pc.dim(bounded(warning.code))}${phase}`,
+      );
+      for (const line of bounded(warning.message).split('\n')) this.print(pc.yellow(line));
+      this.print('');
+    }
+  }
+
   /**
    * Prints the rows reporters resolved with under the summary, in the
    * summary's layout, then the run's `Failed` rows: the runner calls this
@@ -1315,6 +1345,7 @@ export class ListReporter implements Reporter {
     this.printFailures('Failed Tests', this.failures, pages);
     this.printFailures('Skipped After Failure', this.skippedFailures, pages);
     this.printErrors();
+    this.printWarnings();
     this.print('');
     for (const row of this.summaryRows(true)) this.print(row);
     // The report is for scripts, so a run names it only when it is missing: `--last-failed` reads it next.

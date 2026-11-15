@@ -155,7 +155,7 @@ describe('serial attempt record provenance', () => {
     try {
       await runSerialUnit(host, pairs, file);
       expect(streamed.map((attempt) => attempt.cutRetry)).toEqual([false, mode !== 'reached']);
-      const report = buildReport({ runId: host.runId, config: undefined, startedAt: '2026-01-01T00:00:00.000Z', status: 'failed', exitCode: 1, results, serialGroups: groups, runErrors: [], targetProvenance: new Map() });
+      const report = buildReport({ runId: host.runId, config: undefined, startedAt: '2026-01-01T00:00:00.000Z', status: 'failed', exitCode: 1, results, serialGroups: groups, runErrors: [], runWarnings: [], targetProvenance: new Map() });
       const serialized = JSON.parse(JSON.stringify(report));
       expect(serialized.run.serialGroups[0].attempts.map((attempt: { cutRetry: boolean }) => attempt.cutRetry)).toEqual([false, mode !== 'reached']);
       const result = outcome(report.run.results[0]!, new Map(report.run.serialGroups!.map((group) => [group.id, group])));
